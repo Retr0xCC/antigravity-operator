@@ -65,6 +65,23 @@ class TestContainer(unittest.TestCase):
         self.assertIn("HTTP_PROXY=http://host.docker.internal:38421", cmd_str)
         self.assertIn("HTTPS_PROXY=http://host.docker.internal:38421", cmd_str)
 
+    def test_unix_socket_proxy_network_none_and_socat(self):
+        cmd = build_docker_cmd(
+            recipe=self.recipe,
+            storage_root=self.storage_root,
+            offline=False,
+            proxy_socket_path="/tmp/test-proxy.sock",
+            enable_metadata=True,
+        )
+        cmd_str = " ".join(cmd)
+        self.assertIn("--network=none", cmd_str)
+        self.assertIn("/tmp/test-proxy.sock:/run/proxy.sock", cmd_str)
+        self.assertIn("HTTP_PROXY=http://127.0.0.1:3128", cmd_str)
+        self.assertIn("HTTPS_PROXY=http://127.0.0.1:3128", cmd_str)
+        self.assertIn("socat TCP-LISTEN:3128", cmd_str)
+        self.assertNotIn("--add-host=host.docker.internal", cmd_str)
+        self.assertNotIn("--dns=", cmd_str)
+
     def test_dry_run_simulation(self):
         cmd = build_docker_cmd(
             recipe=self.recipe,

@@ -102,6 +102,40 @@ class TestEphemeralProxyServer(unittest.TestCase):
                 opener.open("https://192.168.1.1", timeout=2)
             self.assertIn("403 Forbidden", str(ctx.exception))
 
+    def test_unix_socket_proxy_lifecycle_and_filtering(self):
+        import os
+        sock_path = "/tmp/test-unit-agy-proxy.sock"
+        if os.path.exists(sock_path):
+            os.unlink(sock_path)
+
+        allow = ["*.google.com", "generativelanguage.googleapis.com"]
+        proxy = EphemeralAllowlistProxy(allowlist=allow, socket_path=sock_path)
+        ret_path = proxy.start()
+        self.assertEqual(ret_path, sock_path)
+        self.assertTrue(os.path.exists(sock_path))
+        self.assertTrue(proxy._running)
+
+        # Connect directly over Unix domain socket
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.connect(sock_path)
+        client.sendall(b"CONNECT unauthorized-site.com:443 HTTP/1.1\r\nHost: unauthorized-site.com:443\r\n\r\n")
+        resp = client.recv(4096)
+        client.close()
+        self.assertIn(b"403 Forbidden", resp)
+
+        # Test LAN IP rejection over Unix domain socket
+        client2 = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client2.connect(sock_path)
+        client2.sendall(b"CONNECT 192.168.1.1:443 HTTP/1.1\r\nHost: 192.168.1.1:443\r\n\r\n")
+        resp2 = client2.recv(4096)
+        client2.close()
+        self.assertIn(b"403 Forbidden", resp2)
+
+        # Stop proxy and verify socket cleanup
+        proxy.stop()
+        self.assertFalse(proxy._running)
+        self.assertFalse(os.path.exists(sock_path))
+
 
 if __name__ == "__main__":
     unittest.main()

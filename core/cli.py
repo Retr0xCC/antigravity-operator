@@ -299,10 +299,12 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     # Start local allowlist proxy for domain filtering and LAN protection
     proxy = None
-    proxy_port = None
+    proxy_socket_path = None
     if use_proxy:
-        proxy = EphemeralAllowlistProxy(bind_host="0.0.0.0")
-        proxy_port = proxy.start()
+        import time
+        proxy_socket_path = f"/tmp/agy-proxy-{os.getpid()}-{int(time.time())}.sock"
+        proxy = EphemeralAllowlistProxy(socket_path=proxy_socket_path)
+        proxy.start()
 
     print(f"==> Launching Antigravity Operator [{recipe.name}]")
     print(f"    Runtime Engine: Docker Container")
@@ -337,9 +339,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     if is_offline:
         print("    Network:        none (Airgapped / Isolated, no external or LAN access)")
     elif use_proxy:
-        from core.container import detect_docker_network
-        net_name = detect_docker_network()
-        print(f"    Network:        {net_name} (Egress Allowlist Proxy on :{proxy_port}, LAN Isolated)")
+        print("    Network:        none (Hardened: Unix Domain Socket Proxy -> 127.0.0.1:3128, LAN Airgapped)")
     else:
         from core.container import detect_docker_network, DNS_PRIMARY, DNS_SECONDARY
         net_name = detect_docker_network()
@@ -363,7 +363,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             remux=args.remux,
             enable_metadata=metadata_enabled,
             offline=is_offline,
-            proxy_port=proxy_port,
+            proxy_socket_path=proxy_socket_path,
             dry_run=args.dry_run,
             auto=args.auto,
             quality=quality,

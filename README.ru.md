@@ -58,7 +58,7 @@
 Изначально для изоляции рассматривался Docker Sandboxes (`sbx`). Однако отказ от SBX в пользу классического **Docker Engine** — осознанное инженерное решение:
 
 * **Прямой доступ к GPU (Hardware Passthrough):** SBX изолирует процессы внутри microVM, где отсутствует аппаратный проброс символьных устройств хоста. Сжатие видео в **AV1** и **HEVC** на видеокартах AMD (Radeon RX 7000 через `/dev/dri`) или NVIDIA (CUDA NVENC) в SBX физически невозможно. Docker Engine пробрасывает GPU напрямую без виртуализационного оверхеда.
-* **Сетевая изоляция взамен SBX:** Для замены встроенной изоляции Docker Sandboxes в раннер добавлен локальный прокси ([core/proxy.py](file:///home/retro/Projects/antigravity-operator/core/proxy.py)). Он блокирует доступ контейнера к приватным подсетям локальной сети (`192.168.x.x`, `10.x.x.x`, роутеру и хосту) и пропускает запросы только к Google API и базам метаданных без необходимости в правах root или iptables.
+* **Сетевая изоляция на уровне ядра взамен SBX:** Для замены встроенной изоляции Docker Sandboxes контейнер запускается с параметром `--network=none` (интерфейс `eth0` отсутствует, прямой сетевой доступ исключен на уровне ядра). Исходящий трафик направляется исключительно через эфемерный Unix Domain Socket во встроенный прокси-сервер ([core/proxy.py](core/proxy.py)). Он блокирует доступ контейнера к приватным подсетям локальной сети (`192.168.x.x`, `10.x.x.x`, роутеру и хосту) и пропускает запросы только к Google API и базам метаданных без необходимости в правах root или iptables.
 * **Производительность ввода-вывода (Zero-Copy):** Прямое монтирование единого дискового раздела `/storage:rw` позволяет ядру Linux создавать жесткие ссылки `os.link()` за миллисекунды.
 
 ---
@@ -138,25 +138,25 @@ bin/operate doctor
 * **Организация медиатеки (Zero-Copy Hardlink):**
   Мгновенно связывает фильм или сериал из `Downloads` в `Media` с поиском канонического названия на IMDb:
   ```bash
-  bin/operate run media-link /home/retro/HDD-EXT4/Downloads/The.Matrix.1999 /home/retro/HDD-EXT4/Media/Movies
+  bin/operate run media-link /mnt/storage/Downloads/The.Matrix.1999 /mnt/storage/Media/Movies
   ```
 
 * **Сборка дорожек и шрифтов в монолитный MKV (Remux):**
   Объединяет видео, внешние дорожки озвучек (`.mka`), субтитры (`.ass`) и вложенные шрифты в единый файл без пережатия видеопотока:
   ```bash
-  bin/operate run media-remux /home/retro/HDD-EXT4/Downloads/Attack.on.Titan /home/retro/HDD-EXT4/Media/TV
+  bin/operate run media-remux /mnt/storage/Downloads/Attack.on.Titan /mnt/storage/Media/TV
   ```
 
 * **Аппаратное сжатие в AV1 на AMD Radeon RX 7700 XT:**
   Автоматически задействует аппаратный энкодер AV1 (`av1_vaapi`) с защитой Rollback Guard (если сжатый файл оказался больше оригинала, временный файл удаляется):
   ```bash
-  bin/operate run media-compress /home/retro/HDD-EXT4/Media/TV/Frieren --codec av1 --quality 28
+  bin/operate run media-compress /mnt/storage/Media/TV/Frieren --codec av1 --quality 28
   ```
 
 * **Офлайн-режим (`--offline`):**
   Полностью отключает сеть (`--network=none`) для детерминированных задач:
   ```bash
-  bin/operate run media-link /home/retro/HDD-EXT4/Downloads/Series /home/retro/HDD-EXT4/Media/TV --offline
+  bin/operate run media-link /mnt/storage/Downloads/Series /mnt/storage/Media/TV --offline
   ```
 
 ### 4. Сборка контейнера

@@ -25,6 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     mesa-va-drivers \
     libva-drm2 \
     vainfo \
+    socat \
     jq \
     tini \
     && rm -rf /var/lib/apt/lists/*

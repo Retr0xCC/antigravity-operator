@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import os
+from pathlib import Path
 import select
 import socket
 import threading
@@ -111,47 +113,86 @@ def resolve_safe_ip(host: str) -> str | None:
 
 
 class EphemeralAllowlistProxy:
-    """Lightweight in-memory HTTP/HTTPS tunneling proxy with domain filtering and LAN protection."""
+    """Lightweight in-memory HTTP/HTTPS tunneling proxy with domain filtering and LAN protection.
+
+    Supports dual transport modes:
+    - Unix Domain Socket (default for containers): Enables 100% network isolation with `--network=none`.
+      Direct TCP socket connections outside loopback fail with ENETUNREACH at the kernel level.
+    - TCP socket (fallback/testing): Binds to a local TCP port on `bind_host`.
+    """
 
     def __init__(
         self,
         allowlist: Sequence[str] | None = None,
         bind_host: str = "0.0.0.0",
         port: int = 0,
+        socket_path: str | Path | None = None,
     ) -> None:
         self.allowlist = list(allowlist if allowlist is not None else DEFAULT_ALLOWLIST)
         self.bind_host = bind_host
         self._requested_port = port
         self.port: int = 0
+        self.socket_path: str | None = str(socket_path) if socket_path else None
         self._server_sock: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._running = False
         self._active_sockets: set[socket.socket] = set()
         self._lock = threading.Lock()
 
-    def start(self) -> int:
-        """Start the proxy server in a background daemon thread and return the bound port."""
+    def start(self) -> int | str:
+        """Start the proxy server in a background daemon thread.
+        Returns the bound TCP port (int) or Unix socket path (str).
+        """
         if self._running:
+            return self.socket_path if self.socket_path else self.port
+
+        if self.socket_path:
+            # Bind to Unix Domain Socket
+            if os.path.exists(self.socket_path):
+                try:
+                    os.unlink(self.socket_path)
+                except OSError:
+                    pass
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.bind(self.socket_path)
+            # Ensure permissions so container agent (UID 1000) or any user can connect
+            try:
+                os.chmod(self.socket_path, 0o666)
+            except OSError:
+                pass
+            sock.listen(128)
+            sock.settimeout(0.5)
+            self._server_sock = sock
+            self._running = True
+
+            self._thread = threading.Thread(
+                target=self._accept_loop,
+                name=f"EphemeralProxy-UNIX-{os.path.basename(self.socket_path)}",
+                daemon=True,
+            )
+            self._thread.start()
+            logger.info("Ephemeral Allowlist Proxy started on Unix socket: %s", self.socket_path)
+            return self.socket_path
+        else:
+            # Bind to TCP socket
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((self.bind_host, self._requested_port))
+            sock.listen(128)
+            sock.settimeout(0.5)
+
+            self.port = sock.getsockname()[1]
+            self._server_sock = sock
+            self._running = True
+
+            self._thread = threading.Thread(
+                target=self._accept_loop,
+                name=f"EphemeralProxy-TCP-{self.port}",
+                daemon=True,
+            )
+            self._thread.start()
+            logger.info("Ephemeral Allowlist Proxy started on %s:%d", self.bind_host, self.port)
             return self.port
-
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind((self.bind_host, self._requested_port))
-        sock.listen(128)
-        sock.settimeout(0.5)
-
-        self.port = sock.getsockname()[1]
-        self._server_sock = sock
-        self._running = True
-
-        self._thread = threading.Thread(
-            target=self._accept_loop,
-            name=f"EphemeralProxy-{self.port}",
-            daemon=True,
-        )
-        self._thread.start()
-        logger.info("Ephemeral Allowlist Proxy started on %s:%d", self.bind_host, self.port)
-        return self.port
 
     def stop(self) -> None:
         """Stop the proxy server and close all active sockets."""
@@ -163,6 +204,12 @@ class EphemeralAllowlistProxy:
             except Exception:
                 pass
             self._server_sock = None
+
+        if self.socket_path and os.path.exists(self.socket_path):
+            try:
+                os.unlink(self.socket_path)
+            except OSError:
+                pass
 
         with self._lock:
             for s in list(self._active_sockets):

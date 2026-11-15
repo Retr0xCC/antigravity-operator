@@ -257,6 +257,7 @@ def build_docker_cmd(
     enable_metadata: bool = True,
     offline: bool = False,
     proxy_port: int | None = None,
+    proxy_socket_path: str | Path | None = None,
     dry_run: bool = False,
     auto: bool = False,
     quality: int = 28,
@@ -310,6 +311,19 @@ def build_docker_cmd(
     # Network & DNS configuration
     if offline:
         cmd.append("--network=none")
+    elif proxy_socket_path:
+        cmd.extend([
+            "--network=none",
+            "-v", f"{Path(proxy_socket_path).resolve()}:/run/proxy.sock",
+            "-e", "HTTP_PROXY=http://127.0.0.1:3128",
+            "-e", "HTTPS_PROXY=http://127.0.0.1:3128",
+            "-e", "http_proxy=http://127.0.0.1:3128",
+            "-e", "https_proxy=http://127.0.0.1:3128",
+            "-e", "ALL_PROXY=http://127.0.0.1:3128",
+            "-e", "all_proxy=http://127.0.0.1:3128",
+            "-e", "NO_PROXY=localhost,127.0.0.1",
+            "-e", "no_proxy=localhost,127.0.0.1",
+        ])
     else:
         net_name = detect_docker_network()
         cmd.extend([
@@ -375,6 +389,7 @@ def build_docker_cmd(
     dev_path = device_path or gpu.device_path or "/dev/dri/renderD128"
     cmd.extend([
         "-e", "TMPDIR=/tmp",
+        "-e", "TINI_SUBREAPER=1",
         "-e", f"OPERATE_MODE={mode}",
         "-e", f"OPERATE_DRY_RUN={'1' if dry_run else '0'}",
         "-e", f"OPERATE_COMPRESS={'1' if is_compression_active else '0'}",
@@ -456,6 +471,13 @@ def build_docker_cmd(
         agy_args.extend([
             "--print-timeout=0",
             f"--print={agent_prompt}",
+        ])
+
+    if proxy_socket_path:
+        cmd.extend([
+            "sh", "-c",
+            'socat TCP-LISTEN:3128,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/run/proxy.sock & sleep 0.05; exec "$@"',
+            "--",
         ])
 
     cmd.extend(agy_args)

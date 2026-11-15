@@ -107,7 +107,7 @@ def resolve_storage_boundaries(
         if common in (Path("/"), Path.home().resolve()):
             raise SecurityError(
                 f"Source ({valid_src}) and Destination ({valid_dest}) do not share a safe storage root. "
-                "Both must reside on the same filesystem/partition (e.g., /home/retro/HDD-EXT4)."
+                "Both must reside on the same filesystem/partition (e.g., /mnt/storage or /srv/media)."
             )
 
         storage_root = common

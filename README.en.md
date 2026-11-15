@@ -58,7 +58,7 @@ Torrent releases rarely arrive in clean packages. In reality, they are chaotic:
 While Docker Sandboxes (`sbx`) was initially considered, adopting standard **Docker Engine** is a deliberate engineering decision:
 
 * **Direct Hardware GPU Passthrough:** SBX isolates workloads inside microVMs that lack device node passthrough for host GPUs. Hardware video compression in **AV1** and **HEVC** on AMD (Radeon RX 7000 via `/dev/dri`) or NVIDIA (CUDA NVENC) is physically impossible inside SBX. Docker Engine passes GPU devices directly without virtualization overhead.
-* **Network Isolation as an SBX Replacement:** To replace the network isolation mechanism of Docker Sandboxes, the runner includes a local proxy ([core/proxy.py](file:///home/retro/Projects/antigravity-operator/core/proxy.py)). It blocks container access to private LAN subnets (`192.168.x.x`, `10.x.x.x`, router, and host) while allowing requests only to Google APIs and metadata providers, without requiring root privileges or iptables rules on the host.
+* **Kernel-Level Network Isolation as an SBX Replacement:** To replace the network isolation mechanism of Docker Sandboxes, the container runs with `--network=none` (no `eth0` interface, zero direct network access, physically impossible to bypass at the kernel level). Egress traffic is strictly tunneled through an ephemeral Unix domain socket to an in-memory allowlist proxy ([core/proxy.py](core/proxy.py)). It blocks container access to private LAN subnets (`192.168.x.x`, `10.x.x.x`, router, and host) while allowing requests only to Google APIs and metadata providers, without requiring root privileges or iptables rules on the host.
 * **Zero-Copy I/O Performance:** Direct mounting of a single storage root (`/storage:rw`) allows the Linux kernel to perform atomic hardlinks in milliseconds without cross-device boundaries.
 
 ---
@@ -138,25 +138,25 @@ The operator is fully self-contained and **does not require Antigravity installe
 * **Library Organization (Zero-Copy Hardlinks):**
   Instantly links downloads to your media library with IMDb canonical title resolution:
   ```bash
-  bin/operate run media-link /home/retro/HDD-EXT4/Downloads/The.Matrix.1999 /home/retro/HDD-EXT4/Media/Movies
+  bin/operate run media-link /mnt/storage/Downloads/The.Matrix.1999 /mnt/storage/Media/Movies
   ```
 
 * **Lossless Stream and Font Remuxing (Remux):**
   Combines video streams, companion audio tracks (`.mka`), subtitles (`.ass`), and embedded fonts into a single MKV container without video re-encoding:
   ```bash
-  bin/operate run media-remux /home/retro/HDD-EXT4/Downloads/Attack.on.Titan /home/retro/HDD-EXT4/Media/TV
+  bin/operate run media-remux /mnt/storage/Downloads/Attack.on.Titan /mnt/storage/Media/TV
   ```
 
 * **Hardware AV1 Compression on AMD Radeon RX 7700 XT:**
   Engages the hardware AV1 encoder (`av1_vaapi`) with Rollback Guard (if the compressed stream is larger than original, temporary files are destroyed):
   ```bash
-  bin/operate run media-compress /home/retro/HDD-EXT4/Media/TV/Frieren --codec av1 --quality 28
+  bin/operate run media-compress /mnt/storage/Media/TV/Frieren --codec av1 --quality 28
   ```
 
 * **Completely Airgapped Execution (`--offline`):**
   Runs with `--network=none` for deterministic, offline operations:
   ```bash
-  bin/operate run media-link /home/retro/HDD-EXT4/Downloads/Series /home/retro/HDD-EXT4/Media/TV --offline
+  bin/operate run media-link /mnt/storage/Downloads/Series /mnt/storage/Media/TV --offline
   ```
 
 ### 4. Container Image Build

@@ -18,6 +18,7 @@ from core.gpu import GPUInfo, detect_gpu
 
 
 IMAGE_NAME = "antigravity-operator:latest"
+REMOTE_IMAGE_NAME = "ghcr.io/retr0xcc/antigravity-operator:latest"
 DNS_PRIMARY = "9.9.9.9"
 DNS_SECONDARY = "149.112.112.112"
 
@@ -207,6 +208,7 @@ def build_docker_cmd(
     detected_year: str | None = None,
     detected_author: str | None = None,
     category: str | None = None,
+    image_name: str | None = None,
 ) -> list[str]:
     """Build the complete 'docker run' argument list."""
     gpu = gpu_info or detect_gpu()
@@ -321,7 +323,7 @@ def build_docker_cmd(
     cmd.extend(extra_docker_args)
 
     # Image
-    cmd.append(IMAGE_NAME)
+    cmd.append(image_name or IMAGE_NAME)
 
     # Determine reasoning effort based on task complexity
     effective_mode = mode

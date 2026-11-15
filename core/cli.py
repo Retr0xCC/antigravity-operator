@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from core.config import list_recipes, load_recipe, RecipeError
-from core.container import build_docker_cmd, IMAGE_NAME
+from core.container import build_docker_cmd, IMAGE_NAME, REMOTE_IMAGE_NAME
 from core.gpu import detect_gpu
 from core.metadata import clean_title_tokens, search_imdb, search_cyclopedia_book
 from core.proxy import EphemeralAllowlistProxy
@@ -38,6 +38,14 @@ def check_image_exists(image_name: str) -> bool:
         return res.returncode == 0
     except Exception:
         return False
+
+
+def get_effective_image_name() -> str:
+    """Find the best available image: local tag first, then remote published tag."""
+    for img in (IMAGE_NAME, REMOTE_IMAGE_NAME):
+        if check_image_exists(img):
+            return img
+    return REMOTE_IMAGE_NAME
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -189,6 +197,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     use_stream = not bool(getattr(args, "no_stream", False)) and not use_interactive_tui
 
     try:
+        eff_image = get_effective_image_name()
         cmd = build_docker_cmd(
             recipe=recipe,
             storage_root=storage_root,
@@ -216,9 +225,22 @@ def cmd_run(args: argparse.Namespace) -> int:
             detected_year=detected_year,
             detected_author=detected_author,
             category=cat,
+            image_name=eff_image,
         )
 
-        image_ready = check_image_exists(IMAGE_NAME)
+        image_ready = check_image_exists(eff_image)
+
+        if not image_ready and not args.dry_run:
+            print(f"==> Image '{eff_image}' not found locally. Attempting to pull from registry...")
+            docker_bin = shutil.which("docker") or "docker"
+            try:
+                res = subprocess.run([docker_bin, "pull", eff_image])
+                if res.returncode == 0:
+                    image_ready = True
+                else:
+                    print(f"[-] Remote pull failed (image '{eff_image}' not yet published or private).", file=sys.stderr)
+            except Exception as e:
+                print(f"[-] Pull attempt failed: {e}", file=sys.stderr)
 
         if args.dry_run:
             print("\n[DRY RUN] Generated Docker execution command:")
@@ -227,12 +249,12 @@ def cmd_run(args: argparse.Namespace) -> int:
             print("\n[DRY RUN] In live execution, the agent will execute inside the sandbox with OPERATE_DRY_RUN=1.")
 
             if not image_ready:
-                print(f"\n[DRY RUN] Note: Image '{IMAGE_NAME}' is not yet built locally on this host.")
+                print(f"\n[DRY RUN] Note: Image '{eff_image}' is not yet built locally or pulled.")
                 print("[DRY RUN] Run 'bin/operate build' to compile the container image.")
             return 0
 
         if not image_ready:
-            print(f"\nError: Container image '{IMAGE_NAME}' not found locally.", file=sys.stderr)
+            print(f"\nError: Container image '{eff_image}' not found locally or in registry.", file=sys.stderr)
             print("Please build the image first by running:", file=sys.stderr)
             print("    bin/operate build\n", file=sys.stderr)
             return 1
@@ -258,10 +280,11 @@ def cmd_build(args: argparse.Namespace) -> int:
         "BASE_IMAGE", "ghcr.io/retr0xcc/antigravity-sbx-patched:latest"
     )
 
-    print(f"==> Building Docker image '{IMAGE_NAME}' (Base: {base_image})...")
+    print(f"==> Building Docker image '{IMAGE_NAME}' & '{REMOTE_IMAGE_NAME}' (Base: {base_image})...")
     cmd = [
         "docker", "build",
         "-t", IMAGE_NAME,
+        "-t", REMOTE_IMAGE_NAME,
         "--build-arg", f"BASE_IMAGE={base_image}",
         "-f", str(DOCKERFILE_PATH),
         str(REPO_ROOT),
@@ -323,9 +346,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         all_ok = False
 
     # 5. Operator Container Image Check
-    image_ready = check_image_exists(IMAGE_NAME)
+    eff_img = get_effective_image_name()
+    image_ready = check_image_exists(eff_img)
     if image_ready:
-        print(f"  [✓] Operator Image: {IMAGE_NAME} (built & ready)")
+        print(f"  [✓] Operator Image: {eff_img} (built & ready)")
     else:
         print(f"  [-] Operator Image: '{IMAGE_NAME}' not built yet (run 'bin/operate build')")
 

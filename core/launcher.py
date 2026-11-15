@@ -154,10 +154,14 @@ def run_sandbox_planner(
     eff_mixin_kit = mixin_kit_ref or resolve_kit_path()
     eff_image = get_effective_image(custom_image)
 
-    kit_path = Path(eff_mixin_kit)
-    if kit_path.is_dir() and (kit_path / "AGENTS.md").is_file():
-        shutil.copy2(kit_path / "AGENTS.md", workspace / "AGENTS.md")
-        shutil.copy2(kit_path / "AGENTS.md", out / "AGENTS.md")
+    # Use master AGENTS.md from operator repo if present, else fallback to kit
+    master_agents = Path(__file__).resolve().parent / "AGENTS.md"
+    kit_agents = Path(eff_mixin_kit) / "AGENTS.md"
+    src_agents = master_agents if master_agents.is_file() else kit_agents
+
+    if src_agents.is_file():
+        shutil.copy2(src_agents, workspace / "AGENTS.md")
+        shutil.copy2(src_agents, out / "AGENTS.md")
 
     # 3. Detect Sandbox Runner (sbx preferred, docker engine fallback)
     sbx_bin = shutil.which("sbx")
@@ -170,7 +174,12 @@ def run_sandbox_planner(
     initial_prompt = (
         "Inspect all files in /media/input and generate /media/output/plan.json, "
         "/media/output/summary.md, and /media/output/apply.sh strictly according to "
-        "/media/output/host_profile.json and your AGENTS.md instructions."
+        "/media/output/host_profile.json and your AGENTS.md instructions.\n\n"
+        "MANDATORY REQUIREMENT: You MUST perform a Web Search on IMDb (site:imdb.com) to find "
+        "the canonical international English title, release year, and season/episode guide for "
+        "the media. Never blindly use raw folder names or Japanese Romaji without verifying the "
+        "official IMDb title (e.g. map 'Koukaku Kidoutai' -> 'The Ghost in the Shell'). "
+        "Document the resolved IMDb title, year, and URL in /media/output/summary.md."
     )
     prompt_flag = f"--prompt={initial_prompt}" if headless else f"--prompt-interactive={initial_prompt}"
 

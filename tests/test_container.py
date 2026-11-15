@@ -65,6 +65,30 @@ class TestContainer(unittest.TestCase):
         self.assertIn("HTTP_PROXY=http://host.docker.internal:38421", cmd_str)
         self.assertIn("HTTPS_PROXY=http://host.docker.internal:38421", cmd_str)
 
+    def test_dry_run_simulation(self):
+        cmd = build_docker_cmd(
+            recipe=self.recipe,
+            storage_root=self.storage_root,
+            dry_run=True,
+        )
+        cmd_str = " ".join(cmd)
+        self.assertIn("OPERATE_DRY_RUN=1", cmd_str)
+        self.assertIn(f"{self.storage_root.resolve()}:/storage:ro", cmd_str)
+        self.assertNotIn(f"{self.storage_root.resolve()}:/storage:rw", cmd_str)
+        self.assertIn("DRY-RUN SIMULATION", cmd_str)
+        self.assertIn("Do NOT create directories or hardlinks", cmd_str)
+
+    def test_live_execution_storage_rw(self):
+        cmd = build_docker_cmd(
+            recipe=self.recipe,
+            storage_root=self.storage_root,
+            dry_run=False,
+        )
+        cmd_str = " ".join(cmd)
+        self.assertIn("OPERATE_DRY_RUN=0", cmd_str)
+        self.assertIn(f"{self.storage_root.resolve()}:/storage:rw", cmd_str)
+        self.assertNotIn(f"{self.storage_root.resolve()}:/storage:ro", cmd_str)
+
 
 if __name__ == "__main__":
     unittest.main()

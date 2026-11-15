@@ -230,7 +230,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
         image_ready = check_image_exists(eff_image)
 
-        if not image_ready and not args.dry_run:
+        if not image_ready:
             print(f"==> Image '{eff_image}' not found locally. Attempting to pull from registry...")
             docker_bin = shutil.which("docker") or "docker"
             try:
@@ -242,23 +242,18 @@ def cmd_run(args: argparse.Namespace) -> int:
             except Exception as e:
                 print(f"[-] Pull attempt failed: {e}", file=sys.stderr)
 
-        if args.dry_run:
-            print("\n[DRY RUN] Generated Docker execution command:")
-            escaped_cmd = [shlex.quote(c) for c in cmd]
-            print(" \\\n    ".join(escaped_cmd))
-            print("\n[DRY RUN] Dry-run complete: no container was started and no files were modified.")
-            print("[DRY RUN] To perform live execution, run the command without the '--dry-run' flag.")
-
-            if not image_ready:
-                print(f"\n[DRY RUN] Note: Image '{eff_image}' is not yet pulled locally.")
-                print("[DRY RUN] Run 'docker pull " + eff_image + "' or launch without --dry-run to auto-pull.")
-            return 0
-
         if not image_ready:
             print(f"\nError: Container image '{eff_image}' not found locally or in registry.", file=sys.stderr)
             print("Please build the image first by running:", file=sys.stderr)
             print("    bin/operate build\n", file=sys.stderr)
             return 1
+
+        if args.dry_run:
+            print("\n[DRY RUN] Generated Docker execution command:")
+            escaped_cmd = [shlex.quote(c) for c in cmd]
+            print(" \\\n    ".join(escaped_cmd))
+            print("\n[DRY RUN] Launching agent in simulation mode (OPERATE_DRY_RUN=1, /storage:ro)...")
+            print("[DRY RUN] The agent will inspect files and output the execution plan without modifying storage.\n")
 
         return execute_container(cmd, stream=use_stream)
     finally:

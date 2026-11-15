@@ -92,6 +92,28 @@ def build_agent_prompt(
 
     # Plan 1: Fast Link & Cataloging Plan (media-link)
     if effective_mode == "link" or recipe_name == "media-link":
+        if dry_run:
+            exec_steps = (
+                "EXECUTION STEPS (DRY-RUN SIMULATION):\n"
+                f"1. Inspect media files in `{src_display}`.\n"
+                f"2. Determine canonical destination names in `{dest_display}` matching Plex/Jellyfin convention:\n"
+                "   - Movies: /storage/Media/Movies/{Title} ({Year})/{Title} ({Year}).ext\n"
+                "   - TV: /storage/Media/TV/{Title} ({Year})/Season {SS}/{Title} S{SS}E{EE}.ext\n"
+                "   - Audiobooks: /storage/Media/Books/{Author}/{Title} ({Year})/\n"
+                "3. DRY-RUN MODE IS ACTIVE (/storage is mounted read-only): Do NOT create directories or hardlinks.\n"
+                "4. Output a clear execution plan table listing each Source File -> Target Destination Hardlink, and explain the structure."
+            )
+        else:
+            exec_steps = (
+                "EXECUTION STEPS:\n"
+                f"1. Identify media files in `{src_display}`.\n"
+                f"2. Create destination directories in `{dest_display}` matching Plex/Jellyfin convention:\n"
+                "   - Movies: /storage/Media/Movies/{Title} ({Year})/{Title} ({Year}).ext\n"
+                "   - TV: /storage/Media/TV/{Title} ({Year})/Season {SS}/{Title} S{SS}E{EE}.ext\n"
+                "   - Audiobooks: /storage/Media/Books/{Author}/{Title} ({Year})/\n"
+                "3. Create hardlinks via `os.link`.\n"
+                "4. Output execution summary report."
+            )
         return (
             f"You are the autonomous Antigravity Media Link Operator executing recipe '{recipe_name}'.\n"
             f"GOAL: Organize media into Plex/Jellyfin library structure using Zero-Copy hardlinks (os.link).\n\n"
@@ -105,18 +127,29 @@ def build_agent_prompt(
             f"1. SCRATCH ISOLATION: Working directory is /tmp. NEVER write Python scripts, shell scripts, or temporary files into /storage.\n"
             f"2. ZERO-COPY HARDLINKS: Original torrents in /storage/Downloads must NEVER be deleted, moved, or altered (keep seeding intact). Use os.link(src, dst).\n"
             f"3. NO RE-ENCODING: Do NOT run ffmpeg, do NOT re-encode video, and do NOT launch muxpress.\n\n"
-            f"EXECUTION STEPS:\n"
-            f"1. Identify media files in `{src_display}`.\n"
-            f"2. Create destination directories in `{dest_display}` matching Plex/Jellyfin convention:\n"
-            f"   - Movies: /storage/Media/Movies/{{Title}} ({{Year}})/{{Title}} ({{Year}}).ext\n"
-            f"   - TV: /storage/Media/TV/{{Title}} ({{Year}})/Season {{SS}}/{{Title}} S{{SS}}E{{EE}}.ext\n"
-            f"   - Audiobooks: /storage/Media/Books/{{Author}}/{{Title}} ({{Year}})/\n"
-            f"3. Create hardlinks via `os.link`.\n"
-            f"4. Output execution summary report."
+            f"{exec_steps}"
         )
 
     # Plan 2: Stream Remuxing Plan (media-remux)
     if effective_mode == "remux" or recipe_name == "media-remux":
+        if dry_run:
+            exec_steps = (
+                "EXECUTION STEPS (DRY-RUN SIMULATION):\n"
+                f"1. Inspect files in `{src_display}` for video streams, audio tracks (.mka), and subtitles (.ass/.srt).\n"
+                "2. DRY-RUN MODE IS ACTIVE (/storage is mounted read-only): Do NOT execute muxpress or write files.\n"
+                "3. Print the planned `muxpress` command line and stream layout table.\n"
+                "4. Print summary plan."
+            )
+        else:
+            exec_steps = (
+                "EXECUTION STEPS:\n"
+                f"1. Identify media files in `{src_display}`.\n"
+                "2. PRESERVE TORRENTS: Downloads in /storage/Downloads must remain completely untouched.\n"
+                "3. USE MUXPRESS CLI: Execute remuxing using the built-in CLI command:\n"
+                f"   `muxpress \"{src_display}\" --output-dir \"{dest_display}\" --merge-only`\n"
+                "   (Lossless stream copy -c copy with fonts attached, no re-encoding).\n"
+                "4. Print summary report."
+            )
         return (
             f"You are the autonomous Antigravity Media Remux Operator executing recipe '{recipe_name}'.\n"
             f"GOAL: Merge video, companion audio tracks (.mka/.ac3), subtitles (.ass/.srt), and fonts into single MKV containers.\n\n"
@@ -132,12 +165,29 @@ def build_agent_prompt(
             f"3. USE MUXPRESS CLI: Execute remuxing using the built-in CLI command:\n"
             f"   `muxpress \"{src_display}\" --output-dir \"{dest_display}\" --merge-only`\n"
             f"   (Lossless stream copy -c copy with fonts attached, no re-encoding).\n"
-            f"4. Print summary report."
+            f"{exec_steps}"
         )
 
     # Plan 3: Hardware Compression Plan (media-compress)
     if effective_mode == "compress" or recipe_name == "media-compress":
         force_flag = " --force-reencode" if force_hevc else ""
+        if dry_run:
+            exec_steps = (
+                "EXECUTION STEPS (DRY-RUN SIMULATION):\n"
+                f"1. Probe files in `{src_display}` to detect existing codecs, bitrates, and resolutions.\n"
+                "2. DRY-RUN MODE IS ACTIVE (/storage is mounted read-only): Do NOT run ffmpeg/muxpress compression.\n"
+                "3. Print the exact compression command that would be executed and estimated bitrate reduction.\n"
+                "4. Print simulation summary."
+            )
+        else:
+            exec_steps = (
+                "EXECUTION STEPS:\n"
+                f"1. Probe files in `{src_display}` to verify existing codec and bitrate.\n"
+                "2. USE MUXPRESS CLI: Do NOT invent custom ffmpeg scripts from scratch. Run the built-in Muxpress command:\n"
+                f"   `muxpress \"{src_display}\" --compress-only --backend {backend} --codec {codec} --quality {quality}{force_flag}`\n"
+                "3. ATOMIC ROLLBACK: Muxpress automatically checks if the re-encoded file is larger and rolls back.\n"
+                "4. Print summary report of bytes saved."
+            )
         return (
             f"You are the autonomous Antigravity Media Compression Operator executing recipe '{recipe_name}'.\n"
             f"GOAL: Hardware {backend.upper()} {codec.upper()} compression ({gpu_name}) with atomic rollback protection.\n\n"
@@ -153,10 +203,26 @@ def build_agent_prompt(
             f"2. USE MUXPRESS CLI: Do NOT invent custom ffmpeg scripts from scratch. Run the built-in Muxpress command:\n"
             f"   `muxpress \"{src_display}\" --compress-only --backend {backend} --codec {codec} --quality {quality}{force_flag}`\n"
             f"3. ATOMIC ROLLBACK: Muxpress automatically checks if the re-encoded file is larger and rolls back.\n"
-            f"4. Print summary report of bytes saved."
+            f"{exec_steps}"
         )
 
     # Plan 4: Full Multi-Stage Pipeline (media-pipeline)
+    if dry_run:
+        exec_steps = (
+            "EXECUTION STEPS (DRY-RUN SIMULATION):\n"
+            f"1. Inspect `{src_display}` and determine needed stages (Link, Remux, Compress).\n"
+            "2. DRY-RUN MODE IS ACTIVE (/storage is mounted read-only): Do NOT modify storage.\n"
+            "3. Print the complete multi-stage execution plan.\n"
+            "4. Print simulation summary."
+        )
+    else:
+        exec_steps = (
+            "EXECUTION STEPS:\n"
+            f"1. Identify media files in `{src_display}`.\n"
+            "2. Use the built-in CLI tool `muxpress` for remux and compression:\n"
+            f"   `muxpress \"{src_display}\" --output-dir \"{dest_display}\" --backend {backend} --codec {codec} --quality {quality}`\n"
+            "3. Print summary report upon completion."
+        )
     return (
         f"You are the autonomous Antigravity Media Operator executing recipe '{recipe_name}'.\n"
         f"Follow SOP procedures in /recipe/INSTRUCTIONS.md.\n\n"
@@ -176,7 +242,7 @@ def build_agent_prompt(
         f"2. Original torrents in /storage/Downloads must NEVER be deleted, moved, or altered.\n"
         f"3. Use the built-in CLI tool `muxpress` for remux and compression:\n"
         f"   `muxpress \"{src_display}\" --output-dir \"{dest_display}\" --backend {backend} --codec {codec} --quality {quality}`\n"
-        f"4. Print summary report upon completion."
+        f"{exec_steps}"
     )
 
 
@@ -278,8 +344,9 @@ def build_docker_cmd(
         elif backend == "nvenc" or gpu.vendor == "nvidia":
             cmd.extend(["--gpus", "all"])
 
-    # 1. Mount Common Storage Root (Strict :rw for hardlinks across Downloads and Media)
-    cmd.extend(["-v", f"{storage_root.resolve()}:/storage:rw"])
+    # 1. Mount Common Storage Root (Strict :rw for hardlinks across Downloads and Media; :ro during dry-run simulation)
+    storage_access = "ro" if dry_run else "rw"
+    cmd.extend(["-v", f"{storage_root.resolve()}:/storage:{storage_access}"])
 
     # 2. Mount Recipe and Recipes Directory (Strict Read-Only :ro)
     recipes_parent = recipe.path.parent

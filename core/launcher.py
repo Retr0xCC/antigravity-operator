@@ -22,7 +22,8 @@ DEFAULT_BASE_AGENT = "shell"
 DEFAULT_BASE_KIT = "ghcr.io/retr0xcc/antigravity-kit:latest"
 DEFAULT_MIXIN_KIT = "ghcr.io/retr0xcc/media-operator-kit:latest"
 DEFAULT_MEDIA_IMAGE = "ghcr.io/retr0xcc/antigravity-sbx-patched:media"
-DEFAULT_TEMPLATE_IMAGE = "ghcr.io/retr0xcc/antigravity-sbx-patched:latest"
+DEFAULT_TEMPLATE_IMAGE = "ghcr.io/retr0xcc/antigravity-sbx-patched:media"
+FALLBACK_TEMPLATE_IMAGE = "ghcr.io/retr0xcc/antigravity-sbx-patched:latest"
 
 
 def build_host_profile(
@@ -87,7 +88,7 @@ def get_effective_image(custom_image: str | None = None) -> str:
 
     docker_bin = shutil.which("docker")
     if docker_bin:
-        for candidate in [DEFAULT_MEDIA_IMAGE, DEFAULT_TEMPLATE_IMAGE]:
+        for candidate in [DEFAULT_MEDIA_IMAGE, FALLBACK_TEMPLATE_IMAGE]:
             try:
                 res = subprocess.run(
                     [docker_bin, "image", "inspect", candidate],
@@ -99,7 +100,7 @@ def get_effective_image(custom_image: str | None = None) -> str:
             except Exception:
                 pass
 
-    return DEFAULT_TEMPLATE_IMAGE
+    return DEFAULT_MEDIA_IMAGE
 
 
 def run_sandbox_planner(

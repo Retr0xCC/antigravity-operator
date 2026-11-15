@@ -21,8 +21,7 @@ from core.gpu import detect_gpu
 DEFAULT_BASE_AGENT = "shell"
 DEFAULT_BASE_KIT = "ghcr.io/retr0xcc/antigravity-kit:latest"
 DEFAULT_MIXIN_KIT = "ghcr.io/retr0xcc/media-operator-kit:latest"
-DEFAULT_OPERATOR_IMAGE = "ghcr.io/retr0xcc/antigravity-operator:latest"
-FALLBACK_SBX_IMAGE = "ghcr.io/retr0xcc/antigravity-sbx-patched:latest"
+DEFAULT_TEMPLATE_IMAGE = "ghcr.io/retr0xcc/antigravity-sbx-patched:latest"
 
 
 def build_host_profile(
@@ -81,32 +80,10 @@ def resolve_kit_path() -> str:
 
 
 def get_effective_image(custom_image: str | None = None) -> str:
-    """Find the best available image with media tools (ffprobe, mkvmerge, agy)."""
+    """Return the configured template image for the sandbox."""
     if custom_image:
         return custom_image
-
-    docker_bin = shutil.which("docker")
-    if not docker_bin:
-        return DEFAULT_OPERATOR_IMAGE
-
-    for candidate in [
-        "antigravity-operator:latest",
-        DEFAULT_OPERATOR_IMAGE,
-        "ghcr.io/retr0xcc/media-operator:latest",
-        FALLBACK_SBX_IMAGE,
-    ]:
-        try:
-            res = subprocess.run(
-                [docker_bin, "image", "inspect", candidate],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            if res.returncode == 0:
-                return candidate
-        except Exception:
-            pass
-
-    return DEFAULT_OPERATOR_IMAGE
+    return DEFAULT_TEMPLATE_IMAGE
 
 
 def run_sandbox_planner(

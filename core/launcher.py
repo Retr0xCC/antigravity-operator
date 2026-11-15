@@ -21,6 +21,7 @@ from core.gpu import detect_gpu
 DEFAULT_BASE_AGENT = "shell"
 DEFAULT_BASE_KIT = "ghcr.io/retr0xcc/antigravity-kit:latest"
 DEFAULT_MIXIN_KIT = "ghcr.io/retr0xcc/media-operator-kit:latest"
+DEFAULT_MEDIA_IMAGE = "ghcr.io/retr0xcc/antigravity-sbx-patched:media"
 DEFAULT_TEMPLATE_IMAGE = "ghcr.io/retr0xcc/antigravity-sbx-patched:latest"
 
 
@@ -83,6 +84,21 @@ def get_effective_image(custom_image: str | None = None) -> str:
     """Return the configured template image for the sandbox."""
     if custom_image:
         return custom_image
+
+    docker_bin = shutil.which("docker")
+    if docker_bin:
+        for candidate in [DEFAULT_MEDIA_IMAGE, DEFAULT_TEMPLATE_IMAGE]:
+            try:
+                res = subprocess.run(
+                    [docker_bin, "image", "inspect", candidate],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                if res.returncode == 0:
+                    return candidate
+            except Exception:
+                pass
+
     return DEFAULT_TEMPLATE_IMAGE
 
 

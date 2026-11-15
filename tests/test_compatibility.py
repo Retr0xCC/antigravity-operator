@@ -98,20 +98,30 @@ class TestHostCompatibility(unittest.TestCase):
         self.assertGreaterEqual(len(errs), 2)
 
     def test_kit_resolution_and_spec(self):
-        """Verify media-operator kit is present with spec.yaml and AGENTS.md."""
+        """Verify media-operator kit resolution (local directory or remote OCI reference)."""
         kit_path_str = resolve_kit_path()
         kit_path = Path(kit_path_str)
-        self.assertTrue(kit_path.is_dir(), f"Kit path must exist: {kit_path}")
-        self.assertTrue((kit_path / "spec.yaml").is_file(), "spec.yaml must be present in kit")
-        self.assertTrue((kit_path / "AGENTS.md").is_file(), "AGENTS.md must be present in kit")
-        self.assertTrue((kit_path / "Dockerfile").is_file(), "Dockerfile must be present in kit")
 
-        spec_content = (kit_path / "spec.yaml").read_text()
-        self.assertIn("kind: mixin", spec_content)
-        self.assertIn("displayName: Media Pipeline & Library Operator", spec_content)
-        self.assertNotIn("name: media-operator", spec_content, "schemaVersion 3 mixin descriptors do not have a 'name' field")
-        self.assertNotIn("imdb-api.com", spec_content, "imdb-api.com should be removed")
-        self.assertIn("api.themoviedb.org", spec_content)
+        if kit_path.is_dir():
+            self.assertTrue((kit_path / "spec.yaml").is_file(), "spec.yaml must be present in kit")
+            self.assertTrue((kit_path / "AGENTS.md").is_file(), "AGENTS.md must be present in kit")
+            self.assertTrue((kit_path / "Dockerfile").is_file(), "Dockerfile must be present in kit")
+
+            spec_content = (kit_path / "spec.yaml").read_text()
+            self.assertIn("kind: mixin", spec_content)
+            self.assertIn("displayName: Media Pipeline & Library Operator", spec_content)
+            self.assertNotIn("name: media-operator", spec_content, "schemaVersion 3 mixin descriptors do not have a 'name' field")
+            self.assertNotIn("imdb-api.com", spec_content, "imdb-api.com should be removed")
+            self.assertIn("api.themoviedb.org", spec_content)
+        else:
+            self.assertEqual(kit_path_str, "ghcr.io/retr0xcc/media-operator-kit:latest")
+
+        # Verify operator master AGENTS.md
+        master_agents = Path(__file__).resolve().parent.parent / "core" / "AGENTS.md"
+        self.assertTrue(master_agents.is_file(), "core/AGENTS.md must exist in operator repo")
+        content = master_agents.read_text(encoding="utf-8")
+        self.assertIn("IMDb", content)
+        self.assertIn("site:imdb.com", content)
 
 
 if __name__ == "__main__":

@@ -143,7 +143,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     is_in_place_media = "Media" in src_subpath
 
-    # Start ephemeral in-memory proxy for strict domain allowlist and LAN/SSRF protection
+    # Start local allowlist proxy for domain filtering and LAN protection
     proxy = None
     proxy_port = None
     if use_proxy:
@@ -433,7 +433,7 @@ def main(argv: list[str] | None = None) -> int:
         "--no-proxy",
         dest="no_proxy",
         action="store_true",
-        help="Bypass the ephemeral allowlist proxy and allow direct unconstrained network access.",
+        help="Bypass the local allowlist proxy and allow direct unconstrained network access.",
     )
     p_run.add_argument(
         "-q", "--quality", "--qp",

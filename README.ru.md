@@ -2,7 +2,7 @@
 
 # Antigravity Operator
 
-> Автономный медиа-оператор на базе ИИ-агента Antigravity: интеллектуальная организация медиатеки (Plex/Jellyfin), атомарные раздачи ([TRaSH Guides](https://trash-guides.info/Hardlinks/Hardlinks-and-Instant-Moves/)), Muxpress-ремукс и аппаратное сжатие **AV1 / HEVC** в изолированном Docker-контейнере.
+> Автономный агент для организации медиатеки Plex/Jellyfin ([TRaSH Guides](https://trash-guides.info/Hardlinks/Hardlinks-and-Instant-Moves/)), ремукса дорожек и аппаратного сжатия AV1/HEVC в Docker.
 
 [![CLI: operate](https://img.shields.io/badge/CLI-operate-blue.svg)](bin/operate)
 [![Base: antigravity-sbx-patched](https://img.shields.io/badge/Base-antigravity--sbx--patched-blueviolet.svg)](https://github.com/Retr0xCC/antigravity-sbx-patched)
@@ -58,7 +58,7 @@
 Изначально для изоляции рассматривался Docker Sandboxes (`sbx`). Однако отказ от SBX в пользу классического **Docker Engine** — осознанное инженерное решение:
 
 * **Прямой доступ к GPU (Hardware Passthrough):** SBX изолирует процессы внутри microVM, где отсутствует аппаратный проброс символьных устройств хоста. Сжатие видео в **AV1** и **HEVC** на видеокартах AMD (Radeon RX 7000 через `/dev/dri`) или NVIDIA (CUDA NVENC) в SBX физически невозможно. Docker Engine пробрасывает GPU напрямую без виртуализационного оверхеда.
-* **Изоляция локальной сети без microVM:** Встроенный в раннер [core/proxy.py](file:///home/retro/Projects/antigravity-operator/core/proxy.py) эфемерный in-memory прокси решает задачу сетевой безопасности цивилизованнее и чище: блокирует доступ к приватным подсетям LAN (`192.168.x.x`, `10.x.x.x`, роутеру и хосту), выпуская агента строго к Google API и базам метаданных. Не требуется root, iptables или microVM.
+* **Сетевая изоляция взамен SBX:** Для замены встроенной изоляции Docker Sandboxes в раннер добавлен локальный прокси ([core/proxy.py](file:///home/retro/Projects/antigravity-operator/core/proxy.py)). Он блокирует доступ контейнера к приватным подсетям локальной сети (`192.168.x.x`, `10.x.x.x`, роутеру и хосту) и пропускает запросы только к Google API и базам метаданных без необходимости в правах root или iptables.
 * **Производительность ввода-вывода (Zero-Copy):** Прямое монтирование единого дискового раздела `/storage:rw` позволяет ядру Linux создавать жесткие ссылки `os.link()` за миллисекунды.
 
 ---
@@ -73,7 +73,7 @@
  │   - Домашний каталог (~/.ssh, ~/.gnupg, ~/.docker)          │
  │   - Системный диск (/) и Docker Socket                      │
  │                                                             │
- │   Эфемерный Allowlist-прокси (в памяти Python-раннера):     │
+ │   Локальный allowlist-прокси (раннер operate):              │
  │   - Разрешено: Google Gemini API, IMDb, TMDb, Wikipedia     │
  │   - Заблокировано: Домашняя сеть LAN (192.168.x.x), хост    │
  └───────────────────────────────┬─────────────────────────────┘

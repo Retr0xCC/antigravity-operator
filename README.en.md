@@ -2,7 +2,7 @@
 
 # Antigravity Operator
 
-> Autonomous Media Operator powered by Antigravity AI Agent: intelligent media library organization (Plex/Jellyfin), atomic seeding preservation ([TRaSH Guides](https://trash-guides.info/Hardlinks/Hardlinks-and-Instant-Moves/)), Muxpress stream remuxing, and hardware **AV1 / HEVC** compression inside a hardened Docker container.
+> Autonomous agent for Plex/Jellyfin media organization ([TRaSH Guides](https://trash-guides.info/Hardlinks/Hardlinks-and-Instant-Moves/)), stream remuxing, and hardware AV1/HEVC compression in Docker.
 
 [![CLI: operate](https://img.shields.io/badge/CLI-operate-blue.svg)](bin/operate)
 [![Base: antigravity-sbx-patched](https://img.shields.io/badge/Base-antigravity--sbx--patched-blueviolet.svg)](https://github.com/Retr0xCC/antigravity-sbx-patched)
@@ -58,7 +58,7 @@ Torrent releases rarely arrive in clean packages. In reality, they are chaotic:
 While Docker Sandboxes (`sbx`) was initially considered, adopting standard **Docker Engine** is a deliberate engineering decision:
 
 * **Direct Hardware GPU Passthrough:** SBX isolates workloads inside microVMs that lack device node passthrough for host GPUs. Hardware video compression in **AV1** and **HEVC** on AMD (Radeon RX 7000 via `/dev/dri`) or NVIDIA (CUDA NVENC) is physically impossible inside SBX. Docker Engine passes GPU devices directly without virtualization overhead.
-* **LAN Isolation Without MicroVMs:** Our in-memory ephemeral forward proxy [core/proxy.py](file:///home/retro/Projects/antigravity-operator/core/proxy.py) provides strict network security: it blocks access to private LAN subnets (`192.168.x.x`, `10.x.x.x`, router, and host), routing the agent strictly to Google APIs and metadata providers. No root, iptables, or microVMs required.
+* **Network Isolation as an SBX Replacement:** To replace the network isolation mechanism of Docker Sandboxes, the runner includes a local proxy ([core/proxy.py](file:///home/retro/Projects/antigravity-operator/core/proxy.py)). It blocks container access to private LAN subnets (`192.168.x.x`, `10.x.x.x`, router, and host) while allowing requests only to Google APIs and metadata providers, without requiring root privileges or iptables rules on the host.
 * **Zero-Copy I/O Performance:** Direct mounting of a single storage root (`/storage:rw`) allows the Linux kernel to perform atomic hardlinks in milliseconds without cross-device boundaries.
 
 ---
@@ -73,7 +73,7 @@ While Docker Sandboxes (`sbx`) was initially considered, adopting standard **Doc
  │   - Home directory (~/.ssh, ~/.gnupg, ~/.docker)            │
  │   - Root filesystem (/) and Docker Daemon Socket            │
  │                                                             │
- │   Ephemeral Allowlist Proxy (In-memory Python thread):      │
+ │   Local allowlist proxy (operate runner):                   │
  │   - Allowed: Google Gemini API, IMDb, TMDb, Wikipedia       │
  │   - Blocked: Home LAN (192.168.x.x, 10.x.x.x), host IP      │
  └───────────────────────────────┬─────────────────────────────┘
@@ -179,7 +179,7 @@ operate run <recipe> <source> [destination] [options]
 | `--force` | `false` | Force re-encoding even if video stream is already in target codec |
 | `--max-bitrate` | — | Bitrate threshold in kbps (e.g. `4500`): re-encode files exceeding this value |
 | `--offline` | `false` | Run with `--network=none` and local regex title resolution |
-| `--no-proxy` | `false` | Bypass ephemeral allowlist proxy and allow unconstrained network access |
+| `--no-proxy` | `false` | Bypass local allowlist proxy and allow unconstrained network access |
 | `--dry-run` | `false` | Dry-run simulation: print plan without modifying filesystem |
 | `--auto` | `false` | Unattended automated execution without interactive prompts |
 

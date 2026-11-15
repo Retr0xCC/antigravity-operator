@@ -20,14 +20,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     all_ok = True
 
     # 1. Sandbox Engine
-    sbx_bin = shutil.which("sbx")
     docker_bin = shutil.which("docker")
-    if sbx_bin:
+    sbx_bin = shutil.which("sbx")
+    if docker_bin:
+        print(f"  [✓] Docker Engine:          {docker_bin}")
+    elif sbx_bin:
         print(f"  [✓] Docker Sandboxes (sbx): {sbx_bin}")
-    elif docker_bin:
-        print(f"  [✓] Docker Engine (fallback): {docker_bin}")
     else:
-        print("  [✗] Sandbox Engine: neither 'sbx' nor 'docker' found in PATH.")
+        print("  [✗] Sandbox Engine: neither 'docker' nor 'sbx' found in PATH.")
         all_ok = False
 
     # 2. Host Media Tools
@@ -83,6 +83,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
         max_bitrate=args.max_bitrate,
         force_reencode=args.force_reencode,
         headless=getattr(args, "headless", False),
+        custom_image=getattr(args, "image", None),
     )
 
     if plan_file and plan_file.is_file():
@@ -131,6 +132,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         max_bitrate=args.max_bitrate,
         force_reencode=args.force_reencode,
         headless=getattr(args, "headless", False),
+        custom_image=getattr(args, "image", None),
     )
 
     if ret != 0 or not plan_file or not plan_file.is_file():
@@ -174,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--quality", "-q", type=int, default=28, help="Transcode target quality (QP/CRF, default: 28)")
         p.add_argument("--max-bitrate", type=int, help="Maximum video bitrate threshold in kbps")
         p.add_argument("--force-reencode", action="store_true", help="Force re-encoding even if codec matches")
+        p.add_argument("--image", help="Docker image for sandbox planner (default: auto-detected)")
         p.add_argument("--headless", action="store_true", help="Run planning non-interactively and exit automatically")
         p.add_argument("--dry-run", action="store_true", help="Simulate execution without modifying files")
 

@@ -1,4 +1,4 @@
-"""Launcher module for running Antigravity Media Operator inside Docker Sandbox (SBX).
+"""Launcher module for running Antigravity Media Operator planning sandbox.
 
 Prepares host hardware profile, provisions output workspace, mounts media strictly
 in Read-Only (:ro) mode, and dispatches the planning agent.
@@ -16,9 +16,9 @@ from pathlib import Path
 from core.gpu import detect_gpu
 
 
-DEFAULT_BASE_KIT = "ghcr.io/retr0xcc/antigravity-kit:latest"
 DEFAULT_MIXIN_KIT = "ghcr.io/retr0xcc/media-operator-kit:latest"
-DEFAULT_TEMPLATE_IMAGE = "ghcr.io/retr0xcc/antigravity-sbx-patched:latest"
+DEFAULT_OPERATOR_IMAGE = "ghcr.io/retr0xcc/antigravity-operator:latest"
+FALLBACK_SBX_IMAGE = "ghcr.io/retr0xcc/antigravity-sbx-patched:latest"
 
 
 def build_host_profile(
@@ -50,15 +50,6 @@ def write_host_profile(out_dir: Path, profile: dict) -> Path:
     return profile_path
 
 
-def resolve_base_kit_path() -> str:
-    """Find local base antigravity kit or fallback to remote OCI reference."""
-    repo_root = Path(__file__).resolve().parent.parent
-    neighbor_base = repo_root.parent / "antigravity-sbx-patched" / "kits" / "antigravity"
-    if neighbor_base.is_dir() and (neighbor_base / "spec.yaml").is_file():
-        return str(neighbor_base.resolve())
-    return DEFAULT_BASE_KIT
-
-
 def resolve_kit_path() -> str:
     """Find local media-operator kit directory or fallback to remote OCI reference."""
     repo_root = Path(__file__).resolve().parent.parent
@@ -76,6 +67,35 @@ def resolve_kit_path() -> str:
     return DEFAULT_MIXIN_KIT
 
 
+def get_effective_image(custom_image: str | None = None) -> str:
+    """Find the best available image with media tools (ffprobe, mkvmerge, agy)."""
+    if custom_image:
+        return custom_image
+
+    docker_bin = shutil.which("docker")
+    if not docker_bin:
+        return DEFAULT_OPERATOR_IMAGE
+
+    for candidate in [
+        "antigravity-operator:latest",
+        DEFAULT_OPERATOR_IMAGE,
+        "ghcr.io/retr0xcc/media-operator:latest",
+        FALLBACK_SBX_IMAGE,
+    ]:
+        try:
+            res = subprocess.run(
+                [docker_bin, "image", "inspect", candidate],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if res.returncode == 0:
+                return candidate
+        except Exception:
+            pass
+
+    return DEFAULT_OPERATOR_IMAGE
+
+
 def run_sandbox_planner(
     source_dir: Path | str,
     dest_dir: Path | str,
@@ -85,11 +105,13 @@ def run_sandbox_planner(
     max_bitrate: int | None = None,
     force_reencode: bool = False,
     headless: bool = False,
-    base_kit_ref: str | None = None,
-    mixin_kit_ref: str | None = None,
-    template_image: str | None = None,
+    custom_image: str | None = None,
 ) -> tuple[int, Path | None]:
     """Launch the read-only sandbox planner to generate plan.json and summary.md.
+
+    Mounts:
+      - source_dir -> /media/input:ro   (strict Read-Only hardware protection)
+      - out_dir    -> /media/output:rw  (destination for plan.json, summary.md)
 
     Returns:
         (returncode, plan_json_path or None)
@@ -115,20 +137,26 @@ def run_sandbox_planner(
     )
     write_host_profile(out, profile)
 
-    # 2. Select runner: sbx (Docker Sandboxes) or standard docker fallback
-    sbx_bin = shutil.which("sbx")
-    docker_bin = shutil.which("docker")
+    # Copy AGENTS.md instructions from kit to out_dir if available
+    kit_path_str = resolve_kit_path()
+    kit_path = Path(kit_path_str)
+    if kit_path.is_dir() and (kit_path / "AGENTS.md").is_file():
+        shutil.copy2(kit_path / "AGENTS.md", out / "AGENTS.md")
 
-    effective_base_kit = base_kit_ref or resolve_base_kit_path()
-    effective_mixin_kit = mixin_kit_ref or resolve_kit_path()
-    effective_template = template_image or DEFAULT_TEMPLATE_IMAGE
+    # 2. Select execution image
+    docker_bin = shutil.which("docker")
+    if not docker_bin:
+        print("[-] 'docker' binary not found in PATH.", file=sys.stderr)
+        return 1, None
+
+    eff_image = get_effective_image(custom_image)
 
     initial_prompt = (
         "Inspect all files in /media/input and generate /media/output/plan.json, "
         "/media/output/summary.md, and /media/output/apply.sh strictly according to "
         "/media/output/host_profile.json and your AGENTS.md instructions."
     )
-    prompt_flag = f"-p={initial_prompt}" if headless else f"-i={initial_prompt}"
+    prompt_flag = f"--prompt={initial_prompt}" if headless else f"--prompt-interactive={initial_prompt}"
 
     print("=" * 72)
     print("  Antigravity Media Operator: Read-Only Planning Sandbox")
@@ -138,35 +166,42 @@ def run_sandbox_planner(
     print(f"  Plan Output Dir:    {out}")
     print(f"  Operating Mode:     {mode.upper()}")
     print(f"  Host GPU:           {profile['gpu']['name']} ({profile['gpu']['backend'].upper()})")
+    print(f"  Sandbox Image:      {eff_image}")
     print(f"  Execution Mode:     {'Headless (Auto-exit)' if headless else 'Interactive TUI'}")
     print("=" * 72 + "\n")
 
-    if sbx_bin:
-        cmd = [
-            sbx_bin, "run", effective_base_kit,
-            "--kit", effective_mixin_kit,
-            "-v", f"{src}:/media/input:ro",
-            "-v", f"{out}:/media/output:rw",
-            "--",
-            "agy",
-            "--dangerously-skip-permissions",
-            prompt_flag,
-        ]
-    elif docker_bin:
-        # Fallback to direct Docker container
-        cmd = [
-            docker_bin, "run", "-it", "--rm",
-            "--name", "agy-media-planner",
-            "-v", f"{src}:/media/input:ro",
-            "-v", f"{out}:/media/output:rw",
-            effective_template,
-            "agy",
-            "--dangerously-skip-permissions",
-            prompt_flag,
-        ]
-    else:
-        print("[-] Neither 'sbx' (Docker Sandboxes) nor 'docker' engine found in PATH.", file=sys.stderr)
-        return 1, None
+    is_tty = sys.stdin.isatty() and sys.stdout.isatty()
+    cmd = [
+        docker_bin, "run",
+        "--rm",
+        "--name", "agy-media-planner",
+        "-w", "/media/output",
+        "-v", f"{src}:/media/input:ro",
+        "-v", f"{out}:/media/output:rw",
+    ]
+
+    if not headless and is_tty:
+        cmd.insert(2, "-it")
+    elif not headless:
+        cmd.insert(2, "-i")
+
+    # Mount host ~/.gemini credentials if present
+    host_gemini = Path(os.environ.get("GEMINI_HOME", Path.home() / ".gemini")).resolve()
+    if host_gemini.is_dir():
+        cmd.extend(["-v", f"{host_gemini}:/home/agent/.gemini"])
+
+    # Pass API keys if present in host environment
+    for key in ("GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        val = os.environ.get(key)
+        if val:
+            cmd.extend(["-e", f"{key}={val}"])
+
+    cmd.extend([
+        eff_image,
+        "agy",
+        "--dangerously-skip-permissions",
+        prompt_flag,
+    ])
 
     try:
         res = subprocess.run(cmd)
@@ -175,12 +210,10 @@ def run_sandbox_planner(
         print("\n[!] Planning aborted by user.")
         return 130, None
     except Exception as e:
-        print(f"[-] Failed to launch sandbox: {e}", file=sys.stderr)
+        print(f"[-] Sandbox execution error: {e}", file=sys.stderr)
         return 1, None
 
-    plan_file = out / "plan.json"
     summary_file = out / "summary.md"
-
     if summary_file.is_file():
         print("\n" + "=" * 72)
         print("  Generated Plan Summary")
@@ -191,7 +224,7 @@ def run_sandbox_planner(
             pass
         print("=" * 72 + "\n")
 
-    if plan_file.is_file() and plan_file.stat().st_size > 0:
-        return ret, plan_file
-
+    plan_json = out / "plan.json"
+    if plan_json.is_file() and plan_json.stat().st_size > 0:
+        return ret, plan_json
     return ret, None

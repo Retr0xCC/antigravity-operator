@@ -77,6 +77,28 @@ class TestAuth(unittest.TestCase):
                 self.assertIsNone(eff_key)
                 self.assertEqual(desc, "None")
 
+    @patch("core.cli.check_image_exists", return_value=True)
+    @patch("core.cli._run_interactive_oauth", return_value=0)
+    def test_cmd_login_menu_oauth_default(self, mock_oauth, mock_img):
+        from core.cli import cmd_login
+        import argparse
+        args = argparse.Namespace(logout=False, status=False, api_key=None, oauth=False)
+        with patch("builtins.input", side_effect=["1"]):
+            ret = cmd_login(args)
+            self.assertEqual(ret, 0)
+            mock_oauth.assert_called_once()
+
+    @patch("core.cli.check_image_exists", return_value=True)
+    @patch("core.cli.save_shared_credentials", return_value=True)
+    def test_cmd_login_menu_api_key(self, mock_save, mock_img):
+        from core.cli import cmd_login
+        import argparse
+        args = argparse.Namespace(logout=False, status=False, api_key=None, oauth=False)
+        with patch("builtins.input", side_effect=["2", "test-key-xyz"]):
+            ret = cmd_login(args)
+            self.assertEqual(ret, 0)
+            mock_save.assert_called_once_with("test-key-xyz")
+
 
 if __name__ == "__main__":
     unittest.main()

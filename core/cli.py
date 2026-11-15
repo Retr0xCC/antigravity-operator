@@ -623,9 +623,8 @@ def cmd_login(args: argparse.Namespace) -> int:
     print("  The operator runs headlessly inside Docker with credentials persisted")
     print(f"  in the shared directory '{host_gemini}'.\n")
     print("  Choose an authentication method:")
-    print("  1. Gemini API Key (Recommended - persistent, rock-solid in headless/Docker)")
-    print("     Get a free key at https://aistudio.google.com/apikey")
-    print("  2. Interactive Google OAuth (Browser sign-in via agy)\n")
+    print("  1. Google OAuth")
+    print("  2. Gemini API Key\n")
 
     try:
         user_choice = input("  Select [1 or 2, default: 1]: ").strip()
@@ -633,27 +632,28 @@ def cmd_login(args: argparse.Namespace) -> int:
         print("\nAborted.")
         return 1
 
-    if user_choice in ("2", "oauth"):
-        return _run_interactive_oauth(docker_bin, eff_image)
+    if user_choice in ("2", "key", "api_key"):
+        # Prompt for Gemini API Key
+        try:
+            entered_key = input("  Enter Gemini API Key: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborted.")
+            return 1
 
-    # Prompt for Gemini API Key
-    try:
-        entered_key = input("  Enter Gemini API Key (or press Enter for OAuth): ").strip()
-    except (EOFError, KeyboardInterrupt):
-        print("\nAborted.")
-        return 1
+        if not entered_key:
+            print("[-] API key cannot be empty.", file=sys.stderr)
+            return 1
 
-    if not entered_key:
-        return _run_interactive_oauth(docker_bin, eff_image)
+        print(f"==> Persisting Gemini API Key in shared directory '{host_gemini}'...")
+        if save_shared_credentials(entered_key):
+            print("[✓] Gemini API Key saved successfully!")
+            print("    You can now run recipes with: bin/operate run <recipe> <source>")
+            return 0
+        else:
+            print("[-] Failed to save credentials to shared directory.", file=sys.stderr)
+            return 1
 
-    print(f"==> Persisting Gemini API Key in shared directory '{host_gemini}'...")
-    if save_shared_credentials(entered_key):
-        print("[✓] Gemini API Key saved successfully!")
-        print("    You can now run recipes with: bin/operate run <recipe> <source>")
-        return 0
-    else:
-        print("[-] Failed to save credentials to shared directory.", file=sys.stderr)
-        return 1
+    return _run_interactive_oauth(docker_bin, eff_image)
 
 
 def main(argv: list[str] | None = None) -> int:

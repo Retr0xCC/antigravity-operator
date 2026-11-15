@@ -48,6 +48,29 @@ def get_effective_image_name() -> str:
     return REMOTE_IMAGE_NAME
 
 
+def ensure_volume_permissions() -> None:
+    """Ensure persistent Docker volumes have write permissions for container user (UID 1000)."""
+    docker_bin = shutil.which("docker") or "docker"
+    for img in ("alpine:latest", IMAGE_NAME, REMOTE_IMAGE_NAME):
+        if check_image_exists(img):
+            try:
+                subprocess.run(
+                    [
+                        docker_bin, "run", "--rm",
+                        "--user", "0:0",
+                        "-v", "agy-operator-config:/home/agent/.gemini",
+                        "-v", "agy-operator-cache:/home/agent/.cache",
+                        img,
+                        "sh", "-c", "chown -R 1000:1000 /home/agent/.gemini /home/agent/.cache && chmod -R 775 /home/agent/.gemini /home/agent/.cache",
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                break
+            except Exception:
+                pass
+
+
 def check_volume_token_exists() -> bool:
     """Check if the persistent Docker volume 'agy-operator-config' contains an OAuth token."""
     docker_bin = shutil.which("docker") or "docker"
@@ -302,6 +325,9 @@ def cmd_run(args: argparse.Namespace) -> int:
             print("\n[DRY RUN] Launching agent in simulation mode (OPERATE_DRY_RUN=1, /storage:ro)...")
             print("[DRY RUN] The agent will inspect files and output the execution plan without modifying storage.\n")
 
+        # Ensure volume permissions
+        ensure_volume_permissions()
+
         return execute_container(cmd, stream=use_stream)
     finally:
         if proxy:
@@ -424,6 +450,9 @@ def cmd_login(args: argparse.Namespace) -> int:
             print("[-] Pull failed. Please build the image with 'bin/operate build'.", file=sys.stderr)
             return 1
 
+    # Ensure Docker volumes are owned by container user 'agent' (UID 1000)
+    ensure_volume_permissions()
+
     print("==> Launching interactive Antigravity login inside container...")
     print("    Follow the on-screen prompt to sign in with your Google account.")
     print("    Credentials will be stored persistently in Docker volume 'agy-operator-config'.\n")
@@ -431,6 +460,7 @@ def cmd_login(args: argparse.Namespace) -> int:
     cmd = [
         docker_bin, "run", "-it", "--rm",
         "--name", "agy-operator-login",
+        "--net=host",
         "-v", "agy-operator-config:/home/agent/.gemini",
         "-v", "agy-operator-cache:/home/agent/.cache",
         eff_image,

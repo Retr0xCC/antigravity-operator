@@ -63,12 +63,50 @@ def get_host_cache_dir() -> Path:
     return p
 
 
-def ensure_volume_permissions() -> None:
-    """Ensure host .gemini directory permissions allow container user access."""
-    try:
-        get_host_gemini_dir().chmod(0o775)
-    except OSError:
-        pass
+def ensure_shared_permissions() -> None:
+    """Ensure shared host ~/.gemini and cache directories are fully writable by both host and container."""
+    gemini_dir = get_host_gemini_dir()
+    cache_dir = get_host_cache_dir()
+    for d in (gemini_dir, cache_dir):
+        d.mkdir(parents=True, exist_ok=True)
+        try:
+            d.chmod(0o777)
+            for root, dirs, files in os.walk(d):
+                for p in dirs:
+                    try:
+                        (Path(root) / p).chmod(0o777)
+                    except OSError:
+                        pass
+                for p in files:
+                    try:
+                        (Path(root) / p).chmod(0o666)
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+
+    # If directories were initialized or owned by root (via Docker daemon), fix permissions with root
+    docker_bin = shutil.which("docker") or "docker"
+    eff_img = get_effective_image_name()
+    if check_image_exists(eff_img):
+        try:
+            subprocess.run(
+                [
+                    docker_bin, "run", "--rm", "--user", "0:0",
+                    "-v", f"{gemini_dir}:/gemini:z",
+                    "-v", f"{cache_dir}:/cache:z",
+                    eff_img,
+                    "sh", "-c", "chmod -R 777 /gemini /cache 2>/dev/null || true",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+        except Exception:
+            pass
+
+
+ensure_volume_permissions = ensure_shared_permissions
 
 
 def save_shared_credentials(api_key: str) -> bool:
@@ -135,20 +173,47 @@ def clear_shared_credentials() -> bool:
 
 
 def check_shared_token() -> tuple[bool, str | None]:
-    """Check if the shared ~/.gemini directory contains an active OAuth token."""
-    cli_dir = get_host_gemini_dir() / "antigravity-cli"
-    token_file = cli_dir / "antigravity-oauth-token"
-    if token_file.is_file() and token_file.stat().st_size > 0:
-        try:
-            data = json.loads(token_file.read_text())
-            email = data.get("id_token_email")
-            return True, email
-        except Exception:
+    """Check if the shared ~/.gemini directory contains an active OAuth token or session."""
+    gemini_dir = get_host_gemini_dir()
+    cli_dir = gemini_dir / "antigravity-cli"
+
+    # 1. Check known token filenames
+    for candidate in [
+        cli_dir / "antigravity-oauth-token",
+        cli_dir / "jetski-standalone-oauth-token",
+        gemini_dir / "antigravity-oauth-token",
+        gemini_dir / "jetski-standalone-oauth-token",
+        gemini_dir / "oauth_credentials.json",
+    ]:
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            try:
+                data = json.loads(candidate.read_text())
+                email = data.get("id_token_email") or data.get("email")
+                return True, email
+            except Exception:
+                return True, None
+
+    # 2. Check any token / oauth credential files created in cli_dir or gemini_dir
+    for search_dir in (cli_dir, gemini_dir):
+        if search_dir.is_dir():
+            for p in search_dir.iterdir():
+                if p.is_file() and p.stat().st_size > 0:
+                    name_l = p.name.lower()
+                    if "token" in name_l or "oauth" in name_l:
+                        try:
+                            data = json.loads(p.read_text())
+                            email = data.get("id_token_email") or data.get("email")
+                            return True, email
+                        except Exception:
+                            return True, None
+
+    # 3. If agy initialized session state files in ~/.gemini
+    if cli_dir.is_dir():
+        state_files = [cli_dir / "jetski_state.pbtxt", cli_dir / "conversation_summaries.db"]
+        if any(f.is_file() and f.stat().st_size > 0 for f in state_files):
+            # Check if there is an active session or installation
             return True, None
 
-    legacy = get_host_gemini_dir() / "oauth_credentials.json"
-    if legacy.is_file() and legacy.stat().st_size > 0:
-        return True, None
     return False, None
 
 
@@ -541,8 +606,8 @@ def _run_interactive_oauth(docker_bin: str, eff_image: str) -> int:
         docker_bin, "run", "-it", "--rm",
         "--name", "agy-operator-login",
         "--net=host",
-        "-v", f"{host_gemini}:/home/agent/.gemini",
-        "-v", f"{host_cache}:/home/agent/.cache",
+        "-v", f"{host_gemini}:/home/agent/.gemini:z",
+        "-v", f"{host_cache}:/home/agent/.cache:z",
         eff_image,
         "agy",
     ]

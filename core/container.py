@@ -377,8 +377,8 @@ def build_docker_cmd(
     host_cache.mkdir(parents=True, exist_ok=True)
 
     cmd.extend([
-        "-v", f"{host_gemini}:/home/agent/.gemini",
-        "-v", f"{host_cache}:/home/agent/.cache",
+        "-v", f"{host_gemini}:/home/agent/.gemini:z",
+        "-v", f"{host_cache}:/home/agent/.cache:z",
     ])
 
     # Pass Gemini / Google API Key if provided or available in host environment

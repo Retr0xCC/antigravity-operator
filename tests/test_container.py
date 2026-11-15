@@ -99,14 +99,14 @@ class TestContainer(unittest.TestCase):
         self.assertIn("GEMINI_API_KEY=test-gemini-key-12345", cmd_str)
         self.assertIn("GOOGLE_API_KEY=test-gemini-key-12345", cmd_str)
 
-    def test_host_gemini_mounted(self):
+    def test_container_gemini_volume_mounted(self):
         cmd = build_docker_cmd(
             recipe=self.recipe,
             storage_root=self.storage_root,
         )
         cmd_str = " ".join(cmd)
-        host_gemini = Path.home() / ".gemini"
-        self.assertIn(f"{host_gemini.resolve()}:/home/agent/.gemini", cmd_str)
+        self.assertIn("agy-operator-config:/home/agent/.gemini", cmd_str)
+        self.assertIn("agy-operator-cache:/home/agent/.cache", cmd_str)
 
 
 if __name__ == "__main__":

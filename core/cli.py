@@ -48,15 +48,33 @@ def get_effective_image_name() -> str:
     return REMOTE_IMAGE_NAME
 
 
+def check_volume_token_exists() -> bool:
+    """Check if the persistent Docker volume 'agy-operator-config' contains an OAuth token."""
+    docker_bin = shutil.which("docker") or "docker"
+    for img in ("alpine:latest", IMAGE_NAME, REMOTE_IMAGE_NAME):
+        if check_image_exists(img):
+            try:
+                cmd = [
+                    docker_bin, "run", "--rm",
+                    "-v", "agy-operator-config:/home/agent/.gemini",
+                    img,
+                    "test", "-s", "/home/agent/.gemini/antigravity-cli/antigravity-oauth-token",
+                ]
+                res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return res.returncode == 0
+            except Exception:
+                pass
+    return False
+
+
 def check_auth_available(api_key: str | None = None) -> tuple[bool, str]:
-    """Check whether Gemini authentication (OAuth token or API key) is available on the host."""
+    """Check whether Gemini authentication (container volume OAuth token or API key) is available."""
     eff_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if eff_key:
         return True, "API Key (GEMINI_API_KEY / GOOGLE_API_KEY)"
 
-    token_file = Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
-    if token_file.is_file() and token_file.stat().st_size > 0:
-        return True, f"OAuth Token (~/.gemini/.../antigravity-oauth-token)"
+    if check_volume_token_exists():
+        return True, "OAuth Token (Container volume 'agy-operator-config')"
 
     return False, "None"
 
@@ -161,8 +179,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     has_auth, auth_type = check_auth_available(cli_api_key)
     if not has_auth and not is_offline:
         print("\n[-] Error: Google Antigravity authentication required.", file=sys.stderr)
-        print("    No active OAuth credentials or GEMINI_API_KEY found on this host.\n", file=sys.stderr)
-        print("    To authenticate, please do one of the following:", file=sys.stderr)
+        print("    No active session found in container volume 'agy-operator-config' and no GEMINI_API_KEY provided.\n", file=sys.stderr)
+        print("    To authenticate, choose one of the following:", file=sys.stderr)
         print("    1. Sign in interactively with your Google account:", file=sys.stderr)
         print("       bin/operate login\n", file=sys.stderr)
         print("    2. Or provide a Gemini API key:", file=sys.stderr)
@@ -395,12 +413,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 
 def cmd_login(args: argparse.Namespace) -> int:
-    """Interactively authenticate with Google Antigravity inside the operator container."""
+    """Interactively authenticate with Google Antigravity inside the persistent container volume."""
     eff_image = get_effective_image_name()
-    host_gemini = Path.home() / ".gemini"
-    host_gemini.mkdir(parents=True, exist_ok=True)
-
     docker_bin = shutil.which("docker") or "docker"
+
     if not check_image_exists(eff_image):
         print(f"==> Image '{eff_image}' not found locally. Attempting to pull...")
         res = subprocess.run([docker_bin, "pull", eff_image])
@@ -408,14 +424,15 @@ def cmd_login(args: argparse.Namespace) -> int:
             print("[-] Pull failed. Please build the image with 'bin/operate build'.", file=sys.stderr)
             return 1
 
-    print("==> Launching interactive Antigravity authentication...")
-    print("    Follow the on-screen instructions to sign in with your Google account.")
-    print(f"    Credentials will be saved to: {host_gemini / 'antigravity-cli'}\n")
+    print("==> Launching interactive Antigravity login inside container...")
+    print("    Follow the on-screen prompt to sign in with your Google account.")
+    print("    Credentials will be stored persistently in Docker volume 'agy-operator-config'.\n")
 
     cmd = [
         docker_bin, "run", "-it", "--rm",
         "--name", "agy-operator-login",
-        "-v", f"{host_gemini.resolve()}:/home/agent/.gemini",
+        "-v", "agy-operator-config:/home/agent/.gemini",
+        "-v", "agy-operator-cache:/home/agent/.cache",
         eff_image,
         "agy",
     ]

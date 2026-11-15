@@ -1,64 +1,117 @@
-"""Basic host compatibility and launch readiness checks for Antigravity Operator."""
+"""Host compatibility and plan engine test suite for Antigravity Media Operator."""
 
+import json
 import shutil
+import tempfile
 import unittest
 from pathlib import Path
 
-from core.cli import check_auth_available
-from core.config import list_recipes, load_recipe
-from core.container import build_docker_cmd
+from core.cli import cmd_doctor
 from core.gpu import detect_gpu
+from core.launcher import build_host_profile, resolve_kit_path
+from core.plan import execute_plan, load_plan, validate_plan, PlanError
 
 
 class TestHostCompatibility(unittest.TestCase):
-    """Smoke tests verifying host environment readiness and container launch capabilities."""
+    """Test suite verifying host environment readiness, kit resolution, and plan safety."""
 
-    def test_docker_available(self):
-        """Verify Docker is installed or detectable on the host system."""
-        docker_bin = shutil.which("docker")
-        self.assertIsNotNone(docker_bin, "Docker engine binary must be installed on the host.")
-
-    def test_recipes_loadable(self):
-        """Verify recipes catalog loads and contains core processing recipes."""
-        recipes_dir = Path(__file__).resolve().parent.parent / "recipes"
-        recipes = list_recipes(recipes_dir)
-        self.assertGreaterEqual(len(recipes), 1, "At least one recipe must be loaded.")
-        recipe_names = [r.name for r in recipes]
-        self.assertIn("media-link", recipe_names, "Built-in 'media-link' recipe must be available.")
-        media_link = load_recipe(recipes_dir, "media-link")
-        self.assertTrue(media_link.instructions_file.exists(), "Recipe instructions must exist.")
-
-    def test_gpu_detection_runs(self):
+    def test_gpu_detection(self):
         """Verify hardware/GPU discovery runs without errors on host."""
         gpu = detect_gpu()
         self.assertIsNotNone(gpu)
         self.assertIn(gpu.backend, ("vaapi", "nvenc", "software"))
         self.assertIn(gpu.recommended_codec, ("av1", "hevc"))
+        d = gpu.to_dict()
+        self.assertIsInstance(d, dict)
+        self.assertIn("supports_av1", d)
+        self.assertIn("recommended_encoder", d)
 
-    def test_auth_check_runs(self):
-        """Verify authentication discovery can inspect host environment/credentials safely."""
-        has_auth, desc, eff_key = check_auth_available()
-        self.assertIsInstance(has_auth, bool)
-        self.assertIsInstance(desc, str)
+    def test_host_profile_generation(self):
+        """Verify host_profile.json context is properly generated."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src = Path(tmpdir) / "Downloads" / "TestSeries"
+            dst = Path(tmpdir) / "Media" / "TV"
+            src.mkdir(parents=True)
+            dst.mkdir(parents=True)
 
-    def test_launch_command_generation(self):
-        """Verify container launch command can be constructed for a recipe."""
-        recipes_dir = Path(__file__).resolve().parent.parent / "recipes"
-        recipe = load_recipe(recipes_dir, "media-link")
-        dummy_storage = Path("/tmp")
+            profile = build_host_profile(
+                source_dir=src,
+                dest_dir=dst,
+                mode="compress",
+                quality=26,
+            )
 
-        cmd = build_docker_cmd(
-            recipe=recipe,
-            storage_root=dummy_storage,
-            dry_run=True,
-        )
-        cmd_str = " ".join(cmd)
+            self.assertEqual(profile["host_input_path"], str(src.resolve()))
+            self.assertEqual(profile["host_output_path"], str(dst.resolve()))
+            self.assertEqual(profile["mode"], "compress")
+            self.assertEqual(profile["quality"], 26)
+            self.assertIn("gpu", profile)
+            self.assertIn("backend", profile["gpu"])
 
-        self.assertIn("docker", cmd[0])
-        self.assertIn("run", cmd)
-        self.assertIn(":/storage:ro", cmd_str)
-        self.assertIn(":/home/agent/.gemini", cmd_str)
-        self.assertIn("OPERATE_DRY_RUN=1", cmd_str)
+    def test_plan_validation_and_dry_run(self):
+        """Verify plan validation and safe simulation of actions."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            src_file = tmp_path / "ep01.mkv"
+            src_file.write_text("dummy media content")
+            target_dir = tmp_path / "TV" / "Show (2024)" / "Season 01"
+            dst_file = target_dir / "Show S01E01.mkv"
+
+            plan_data = {
+                "version": "1.0",
+                "category": "tv",
+                "title": "Show",
+                "year": 2024,
+                "actions": [
+                    {"type": "mkdir", "path": str(target_dir)},
+                    {"type": "link", "src": str(src_file), "dst": str(dst_file)},
+                ],
+            }
+
+            errors = validate_plan(plan_data)
+            self.assertEqual(errors, [])
+
+            plan_file = tmp_path / "plan.json"
+            plan_file.write_text(json.dumps(plan_data))
+
+            # Dry-run execution must succeed and NOT create destination files
+            ok = execute_plan(plan_file, dry_run=True)
+            self.assertTrue(ok)
+            self.assertFalse(dst_file.exists())
+
+            # Real execution must create hardlink
+            ok_real = execute_plan(plan_file, dry_run=False)
+            self.assertTrue(ok_real)
+            self.assertTrue(dst_file.exists())
+            self.assertEqual(src_file.stat().st_ino, dst_file.stat().st_ino)
+
+    def test_plan_validation_rejects_malformed_actions(self):
+        """Verify invalid action types or missing paths are caught by validator."""
+        invalid_data = {
+            "version": "1.0",
+            "actions": [
+                {"type": "invalid_action"},
+                {"type": "link", "src": "/path/to/src"},  # missing dst
+            ],
+        }
+        errs = validate_plan(invalid_data)
+        self.assertGreaterEqual(len(errs), 2)
+
+    def test_kit_resolution_and_spec(self):
+        """Verify media-operator kit is present with spec.yaml and AGENTS.md."""
+        kit_path_str = resolve_kit_path()
+        kit_path = Path(kit_path_str)
+        self.assertTrue(kit_path.is_dir(), f"Kit path must exist: {kit_path}")
+        self.assertTrue((kit_path / "spec.yaml").is_file(), "spec.yaml must be present in kit")
+        self.assertTrue((kit_path / "AGENTS.md").is_file(), "AGENTS.md must be present in kit")
+        self.assertTrue((kit_path / "Dockerfile").is_file(), "Dockerfile must be present in kit")
+
+        spec_content = (kit_path / "spec.yaml").read_text()
+        self.assertIn("kind: mixin", spec_content)
+        self.assertIn("displayName: Media Pipeline & Library Operator", spec_content)
+        self.assertNotIn("name: media-operator", spec_content, "schemaVersion 3 mixin descriptors do not have a 'name' field")
+        self.assertNotIn("imdb-api.com", spec_content, "imdb-api.com should be removed")
+        self.assertIn("api.themoviedb.org", spec_content)
 
 
 if __name__ == "__main__":

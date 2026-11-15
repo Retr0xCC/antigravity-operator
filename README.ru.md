@@ -2,224 +2,117 @@
 
 # Antigravity Operator
 
-> Автономный агент для организации медиатеки Plex/Jellyfin ([TRaSH Guides](https://trash-guides.info/Hardlinks/Hardlinks-and-Instant-Moves/)), ремукса дорожек и аппаратного сжатия AV1/HEVC в Docker.
+> Тонкий хостовый лаунчер и исполнитель планов медиатеки Plex/Jellyfin ([TRaSH Guides](https://trash-guides.info/Hardlinks/Hardlinks-and-Instant-Moves/)), работающий в связке с изолированным Docker Sandbox (SBX) Mixin Kit.
 
 [![CLI: operate](https://img.shields.io/badge/CLI-operate-blue.svg)](bin/operate)
 [![Base: antigravity-sbx-patched](https://img.shields.io/badge/Base-antigravity--sbx--patched-blueviolet.svg)](https://github.com/Retr0xCC/antigravity-sbx-patched)
-[![Runtime: Docker Engine](https://img.shields.io/badge/Runtime-Docker%20Engine-2496ED?logo=docker&logoColor=white)](docker/Dockerfile)
+[![Runtime: Docker Sandboxes (SBX)](https://img.shields.io/badge/Runtime-Docker%20Sandboxes%20(SBX)-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/)
 [![GPU: AMD AV1 & NVIDIA NVENC](https://img.shields.io/badge/GPU-AMD%20AV1%20%7C%20NVENC-ED1C24?logo=amd&logoColor=white)](#аппаратное-ускорение-gpu)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Codeberg](https://img.shields.io/badge/Codeberg-Main_Repo-2185D0?logo=codeberg&logoColor=white)](https://codeberg.org/Retr0xCC/antigravity-operator)
-[![GitHub](https://img.shields.io/badge/GitHub-Mirror-181717?logo=github&logoColor=white)](https://github.com/Retr0xCC/antigravity-operator)
 
 ---
 
-## Предыстория и предназначение
+## Новая архитектура: RO-песочница → План → Нативное исполнение на хосте
 
-### Проблема домашних медиасерверов
-Любой владелец домашнего кинотеатра на базе **Plex**, **Jellyfin** или **Emby** неизбежно сталкивается с конфликтом двух миров:
-1. **Медиасерверы требуют строгой структуры:** для автоматического сопоставления постеров, описаний и актеров файлы должны быть разложены по строгим каноническим путям, например:
-   `Movies/The Matrix (1999)/The Matrix (1999).mkv` или `TV/Frieren (2023)/Season 01/Frieren S01E01.mkv`.
-2. **Торрент-клиенты требуют неизменности:** скачанные файлы в `Downloads` должны оставаться с оригинальными именами и путями, иначе хэш раздачи ломается, сидинг останавливается, а рейтинг на трекере падает.
-
-### Решение: Атомарные жесткие ссылки (TRaSH Guides)
-Стандарт сообщества — методология [TRaSH Guides: Hardlinks and Instant Moves](https://trash-guides.info/Hardlinks/Hardlinks-and-Instant-Moves/).
-
-Если папка загрузок (`Downloads`) и медиатека (`Media`) находятся на **одном физическом разделе диска**, файлы не копируются и не перемещаются. Вместо этого создаются жесткие ссылки (`os.link`): второй указатель файловой системы на тот же самый инод. 
-* Место на диске **не дублируется** (Zero-Copy).
-* Торрент продолжает непрерывно раздаваться в `Downloads`.
-* Медиасервер получает идеальную, чистую структуру в `Media`.
+Старая модель прямого запуска тяжёлого Docker-контейнера с GPU-пробросом, root-правами и перезаписью файлов на хосте заменена на чистую двухфазную архитектуру:
 
 ```text
-       Физический файл на диске (ext4, Inode #482910)
-                      ▲                ▲
-                      │                │
-           [Жесткая ссылка 1]    [Жесткая ссылка 2]
-         /storage/Downloads/      /storage/Media/Movies/
-         The.Matrix.1999.BDRip    The Matrix (1999)/The Matrix (1999).mkv
-         (Раздача на трекере)     (Каталог Plex / Jellyfin)
+ ┌────────────────────────────────────────────────────────────────────────┐
+ │ 1. ФАЗА АНАЛИЗА (Docker Sandbox microVM / SBX Kit)                     │
+ │    - Исходные файлы торрентов монтируются строго в READ-ONLY (:ro)    │
+ │    - Агент (agy) анализирует кодеки через ffprobe и mkvmerge           │
+ │    - Сеть ограничена строгим allowlist (TMDb, IMDb, Wikipedia, Books) │
+ │    - Вывод в отдельную RW-папку: plan.json, summary.md, apply.sh       │
+ └───────────────────────────────────┬────────────────────────────────────┘
+                                     │
+                                     ▼
+ ┌────────────────────────────────────────────────────────────────────────┐
+ │ 2. ФАЗА ПРИМЕНЕНИЯ (Нативно на хосте под правами пользователя)         │
+ │    - Человек видит понятный отчет summary.md перед запуском            │
+ │    - Хостовый раннер безопасно выполняет plan.json (shell=False)       │
+ │    - Жесткие ссылки (os.link) для TRaSH Guides без дублирования места  │
+ │    - Нативное GPU-кодирование (AMD VA-API AV1/HEVC, NVIDIA NVENC)      │
+ │    - Торренты продолжают непрерывно раздаваться                        │
+ └────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Зачем здесь ИИ-агент?
-Торрент-раздачи редко приходят в идеальном виде. Часто это хаос:
-* Транслит или японские ромадзи в названиях (`Koukaku Kidoutai (2026) [WEB-DL 1080p]`).
-* Внешние дорожки озвучек (`.mka`) и субтитры (`.ass`) лежат отдельными файлами вперемешку со шрифтами (`.ttf`).
-* Традиционные утилиты (Sonarr, Radarr) работают на жестких регулярных выражениях и пасуют на нестандартных релизах, сериалах с несколькими озвучками или аудиокнигах.
-
-**ИИ-агент Antigravity (`agy`) берет рутину на себя:**
-1. Разбирает неструктурированные названия релизов и сопоставляет их с каноническими именами в IMDb/TMDb/Wikipedia.
-2. Анализирует состав раздачи: понимает, какие внешние аудиодорожки и субтитры к какой серии относятся, и с помощью утилиты `muxpress` собирает их в монолитный MKV-контейнер без потери качества.
-3. Мгновенно формирует структуру библиотеки TRaSH Guides через `os.link`.
-
----
-
-## Почему Docker Engine вместо Docker Sandboxes (SBX)
-
-Изначально для изоляции рассматривался Docker Sandboxes (`sbx`). Однако отказ от SBX в пользу классического **Docker Engine** — осознанное инженерное решение:
-
-* **Прямой доступ к GPU (Hardware Passthrough):** SBX изолирует процессы внутри microVM, где отсутствует аппаратный проброс символьных устройств хоста. Сжатие видео в **AV1** и **HEVC** на видеокартах AMD (Radeon RX 7000 через `/dev/dri`) или NVIDIA (CUDA NVENC) в SBX физически невозможно. Docker Engine пробрасывает GPU напрямую без виртуализационного оверхеда.
-* **Сетевая изоляция на уровне ядра взамен SBX:** Для замены встроенной изоляции Docker Sandboxes контейнер запускается с параметром `--network=none` (интерфейс `eth0` отсутствует, прямой сетевой доступ исключен на уровне ядра). Исходящий трафик направляется исключительно через эфемерный Unix Domain Socket во встроенный прокси-сервер ([core/proxy.py](core/proxy.py)). Он блокирует доступ контейнера к приватным подсетям локальной сети (`192.168.x.x`, `10.x.x.x`, роутеру и хосту) и пропускает запросы только к Google API и базам метаданных без необходимости в правах root или iptables.
-* **Производительность ввода-вывода (Zero-Copy):** Прямое монтирование единого дискового раздела `/storage:rw` позволяет ядру Linux создавать жесткие ссылки `os.link()` за миллисекунды.
-
----
-
-## Архитектура безопасности
-
-```text
- ┌─────────────────────────────────────────────────────────────┐
- │                           Хост                              │
- │                                                             │
- │   Защищенные ресурсы (Недоступны контейнеру):               │
- │   - Домашний каталог (~/.ssh, ~/.gnupg, ~/.docker)          │
- │   - Системный диск (/) и Docker Socket                      │
- │                                                             │
- │   Локальный allowlist-прокси (раннер operate):              │
- │   - Разрешено: Google Gemini API, IMDb, TMDb, Wikipedia     │
- │   - Заблокировано: Домашняя сеть LAN (192.168.x.x), хост    │
- └───────────────────────────────┬─────────────────────────────┘
-                                 │ HTTP CONNECT туннель
-                                 │ host.docker.internal:<порт>
-                                 ▼
- ┌─────────────────────────────────────────────────────────────┐
- │               Песочница Antigravity Operator                │
- │               (База: antigravity-sbx-patched)               │
- │                                                             │
- │   - Пользователь: 'agent' (UID 1000, no-new-privileges)     │
- │   - Запрет сырых сокетов: --cap-drop=NET_RAW                │
- │   - Быстрый RAM-диск: --tmpfs=/tmp:rw,size=4g (чистый диск) │
- │   - Ускоритель: /dev/dri/renderD128 (AMD VA-API AV1/HEVC)   │
- │   - Лимиты: memory=8g, cpus=4, pids-limit=4096, Tini init   │
- └───────────────────────────────┬─────────────────────────────┘
-                                 │
-                                 │  os.link(src, dst)
-                                 ▼
- ┌─────────────────────────────────────────────────────────────┐
- │           Физический раздел хранилища (/storage)            │
- │                                                             │
- │   /storage/Downloads/ ──[Hardlink (same inode)]──► /storage/│
- │   (Торрент раздаётся)                                Media/ │
- └─────────────────────────────────────────────────────────────┘
-```
+### Преимущества новой архитектуры:
+1. **100% безопасность исходных файлов:** Медиа-каталог примонтирован в `:ro`. Агент физически не способен удалить, испортить или переместить ни одного скачанного файла.
+2. **Никаких проблем с UID/GID и OAuth-томами:** Вся сессия агента и токены изолированы внутри SBX, а применение плана происходит от вашего реального пользователя на хосте.
+3. **Нативный GPU хоста:** Кодирование видео (AV1/HEVC) запускается локально без виртуализации, эмуляции драйверов и возни с `/dev/dri` внутри контейнера.
+4. **Защита от шелл-инъекций:** План выполняется напрямую через системные вызовы Python (`os.link`, `os.makedirs`, `subprocess.run(shell=False)`). Спецсимволы в именах релизов (`$()`, кавычки, амперсанды) безопасны.
 
 ---
 
 ## Быстрый старт
 
-### 1. Проверка хост-окружения
+### 1. Проверка готовности системы
 ```bash
 bin/operate doctor
 ```
-Проверяет наличие Docker Engine, распознает видеокарту хоста (AMD Radeon VA-API, NVIDIA NVENC), поддержку аппаратного **AV1**, статус авторизации в Gemini и рецепты.
+Проверит наличие Docker / SBX, хостовых мультимедиа-инструментов (`ffmpeg`, `mkvmerge`) и аппаратного видеоускорения GPU.
 
-### 2. Авторизация в Google Antigravity
-Оператор полностью автономен и **не требует наличия Antigravity на хосте**. Настройки, OAuth-токены и API-ключи сохраняются в общей директории `~/.gemini` (монтируемой в `/home/agent/.gemini` контейнера):
-* **Настройка авторизации (Google OAuth или API-ключ):**
-  ```bash
-  bin/operate login
-  ```
-  Позволяет выполнить вход через Google OAuth или сохранить ключ Gemini API. Ключ/токен сохраняется в `~/.gemini` и автоматически подхватывается всеми последующими запусками.
-* **Быстрое сохранение API-ключа одной командой:**
-  ```bash
-  bin/operate login --key="AIzaSy..."
-  ```
-* **Или через переменные окружения:**
-  ```bash
-  export GEMINI_API_KEY="AIzaSy..."
-  # или через флаг запуска: bin/operate run ... --api-key="AIzaSy..."
-  ```
-* **Проверка статуса или выход:**
-  ```bash
-  bin/operate login --status
-  bin/operate login --logout
-  ```
+### 2. Полный цикл (Планирование + Интерактивное подтверждение)
+```bash
+bin/operate run /mnt/storage/Downloads/Torrents/Sousou_no_Frieren --dest /mnt/storage/Media/TV
+```
+1. Запустит песочницу в `:ro`.
+2. Выведет в терминал красивую таблицу из `out/summary.md`.
+3. Спросит: `Do you want to apply this plan on the host now? [y/N]`.
+4. При подтверждении создаст структуру каталогов и жесткие ссылки `os.link`.
 
-### 3. Запуск рецептов
+### 3. Раздельные шаги (Только план или Только применение)
+```bash
+# 1. Сгенерировать план без применения
+bin/operate plan /mnt/storage/Downloads/Torrents/Sousou_no_Frieren --dest /mnt/storage/Media/TV --out ./out
 
-* **Организация медиатеки (Zero-Copy Hardlink):**
-  Мгновенно связывает фильм или сериал из `Downloads` в `Media` с поиском канонического названия на IMDb:
-  ```bash
-  bin/operate run media-link /mnt/storage/Downloads/The.Matrix.1999 /mnt/storage/Media/Movies
-  ```
+# 2. Изучить сгенерированный отчет
+cat ./out/summary.md
 
-* **Сборка дорожек и шрифтов в монолитный MKV (Remux):**
-  Объединяет видео, внешние дорожки озвучек (`.mka`), субтитры (`.ass`) и вложенные шрифты в единый файл без пережатия видеопотока:
-  ```bash
-  bin/operate run media-remux /mnt/storage/Downloads/Attack.on.Titan /mnt/storage/Media/TV
-  ```
-
-* **Аппаратное сжатие в AV1 на AMD Radeon RX 7700 XT:**
-  Автоматически задействует аппаратный энкодер AV1 (`av1_vaapi`) с защитой Rollback Guard (если сжатый файл оказался больше оригинала, временный файл удаляется):
-  ```bash
-  bin/operate run media-compress /mnt/storage/Media/TV/Frieren --codec av1 --quality 28
-  ```
-
-* **Офлайн-режим (`--offline`):**
-  Полностью отключает сеть (`--network=none`) для детерминированных задач:
-  ```bash
-  bin/operate run media-link /mnt/storage/Downloads/Series /mnt/storage/Media/TV --offline
-  ```
-
-### 4. Сборка контейнера
-Образ собирается downstream от базового `ghcr.io/retr0xcc/antigravity-sbx-patched:latest`:
-* **Удаленно:** через встроенный GitHub Actions воркфлоу [.github/workflows/build-and-publish.yml](.github/workflows/build-and-publish.yml) (образ автоматически публикуется в GHCR).
-* **Локально:** при необходимости внесения правок:
-  ```bash
-  bin/operate build
-  ```
-
----
-
-## Доступные рецепты
-
-| Рецепт | Назначение | Ресурсы | Время |
-| :--- | :--- | :--- | :--- |
-| **`media-link`** | Организация структуры TRaSH Guides через Zero-Copy Hardlinks | 0% GPU, 0% CPU | ~5–10 сек |
-| **`media-remux`** | Lossless упаковка дорожек, субтитров и шрифтов в единый MKV (`-c copy`) | Без пережатия | ~20–40 сек |
-| **`media-compress`**| Аппаратное AV1 / HEVC сжатие тяжелых релизов с защитой Rollback | GPU (AMD VA-API / NVENC) | Зависит от GPU |
-| **`media-pipeline`**| Комплексный конвейер (Link + Remux + Compress) | Настраиваемый | Полный цикл |
-
----
-
-## Справочник параметров CLI
-
-```text
-operate run <recipe> <source> [destination] [параметры]
+# 3. Применить готовый план на хосте
+bin/operate apply ./out/plan.json
 ```
 
-| Параметр | По умолчанию | Описание |
-| :--- | :--- | :--- |
-| `recipe` | — | Имя рецепта (`media-link`, `media-remux`, `media-compress`, `media-pipeline`) |
-| `source` | — | Исходная папка в `Downloads` или `Media` |
-| `destination` / `-d` | Автовыбор | Целевая папка библиотеки (`Movies`, `TV`, `Books`) |
-| `--codec` | `auto` | Целевой видеокодек: `auto` (AV1 для RDNA 3/Ada, HEVC для старых), `av1`, `hevc`, `h264` |
-| `--backend` | `auto` | Бэкенд энкодера: `auto` (AMD/Intel `vaapi`, NVIDIA `nvenc`, CPU `software`) |
-| `--device` | Автовыбор | Путь к DRI render-ноде (например `/dev/dri/renderD128`) |
-| `-q`, `--quality` | `28` | Качество сжатия (CQP global_quality для VA-API, QP для NVENC, CRF для CPU) |
-| `--preset` | `p6` | Пресет скорости/качества кодирования |
-| `--remux` | `false` | Упаковать внешние аудиодорожки, сабы и шрифты в единый `.mkv` |
-| `--compress` | `false` | Включить аппаратное сжатие видеопотока |
-| `--force` | `false` | Принудительно сжать, даже если видео уже в целевом кодеке |
-| `--max-bitrate` | — | Порог битрейта в kbps (например `4500`): пережимать только релизы выше порога |
-| `--offline` | `false` | Полный офлайн без сетевых интерфейсов (`--network=none`, офлайн-парсинг) |
-| `--no-proxy` | `false` | Отключить встроенный allowlist-прокси и дать прямой сетевой доступ |
-| `--api-key` | `env` | Ключ Gemini API (альтернатива входу через `bin/operate login`) |
-| `--dry-run` | `false` | Симуляция: запуск агента в read-only режиме (`/storage:ro`) для вывода плана |
-| `--auto` | `false` | Автономный запуск без интерактивных подтверждений |
+---
+
+## Режимы работы (`--mode`)
+
+| Режим | Действие | Перекодирование? | Исходные файлы | Результат |
+| :--- | :--- | :--- | :--- | :--- |
+| **`link`** *(по умолчанию)* | Жесткие ссылки (`os.link`) | Нет (0 CPU) | Не тронуты | Раздельные файлы видео, дорожек и субтитров |
+| **`remux`** | Объединение видео + внешних дорожек и шрифтов в `.mkv` | Нет (`-c copy`) | Не тронуты | Единый монолитный `.mkv` на серию |
+| **`compress`** | Аппаратное сжатие в AV1/HEVC | Да (GPU хоста) | Не тронуты | Сжатый файл (откат, если размер вырос) |
+| **`full`** | Ремукс всех дорожек **И** аппаратное сжатие | Да (GPU хоста) | Не тронуты | Единый сжатый `.mkv` файл |
 
 ---
 
-## Аппаратное ускорение (GPU)
+## Аппаратное ускорение GPU
 
-* **AMD Radeon:** RX 7000 Series (RDNA 3 / Navi 3x, включая Radeon RX 7700 XT) с поддержкой **AV1** (`av1_vaapi`) и **HEVC** (`hevc_vaapi`) через Mesa VA-API на `/dev/dri/renderD128`.
-* **NVIDIA:** GeForce GTX 10xx, RTX 20xx/30xx/40xx с драйвером NVIDIA и NVIDIA Container Toolkit.
-* **Intel:** Arc / Iris Xe через QuickSync / VA-API.
-
-> [!NOTE]
-> Тестирование и профилирование проводились на **AMD Radeon RX 7700 XT** (Linux, Mesa VA-API). Поддержка NVIDIA и Intel заложена в архитектуру и покрыта тестами генерации команд, но на физическом оборудовании NVIDIA/Intel код не проверялся из-за отсутствия карт в наличии.
+Хостовый лаунчер автоматически опрашивает хост перед запуском планирования:
+* **AMD Radeon (RX 7000 / RDNA 3):** аппаратный энкодер `av1_vaapi` или `hevc_vaapi`.
+* **NVIDIA GeForce (RTX 40+ / Ampere / Turing):** аппаратный энкодер `av1_nvenc` или `hevc_nvenc`.
+* **Intel Arc / UHD:** аппаратный энкодер `av1_vaapi` или `hevc_vaapi`.
+* **CPU fallback:** программный энкодер `libx265`.
 
 ---
 
-## Лицензия и отказ от ответственности
+## Структура проекта
 
-* Исходный код распространяется под лицензией **[MIT](LICENSE)** (© 2026 Retr0xCC).
-* **Disclaimer**: Это независимый проект сообщества. Он не связан, не спонсируется и не одобрен компаниями Google LLC или Docker, Inc. «Google Antigravity» является товарным знаком Google LLC. «Docker» является товарным знаком Docker, Inc.
+```text
+antigravity-operator/
+├── bin/
+│   └── operate                # Единый CLI-интерфейс
+├── core/
+│   ├── cli.py                 # Диспетчер команд CLI
+│   ├── gpu.py                 # Полноценный хостовый детектор GPU
+│   ├── launcher.py            # Подготовка host_profile.json и запуск SBX
+│   └── plan.py                # Безопасный хостовый раннер plan.json
+├── kits/
+│   └── media-operator/        # Mixin Kit для antigravity-sbx-patched
+│       ├── spec.yaml          # Декларация кита и сетевой allowlist
+│       ├── AGENTS.md          # Инструкции агенту (SOP Jellyfin/Plex)
+│       └── Dockerfile         # Предварительно запеченные ffmpeg/mkvtoolnix
+├── recipes/                   # Оригинальные рецепты и SOP
+└── tests/
+    └── test_compatibility.py  # Набор тестов совместимости и безопасности
+```

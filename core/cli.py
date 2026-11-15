@@ -1,860 +1,213 @@
-"""CLI Interface and argument parser for antigravity-operator."""
+"""CLI entrypoint and subcommand dispatch for Antigravity Operator."""
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
-import shlex
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-from core.config import list_recipes, load_recipe, RecipeError
-from core.container import build_docker_cmd, IMAGE_NAME, REMOTE_IMAGE_NAME
 from core.gpu import detect_gpu
-from core.metadata import clean_title_tokens, search_imdb, search_cyclopedia_book
-from core.proxy import EphemeralAllowlistProxy
-from core.runner import execute_container
-from core.security import resolve_storage_boundaries, SecurityError
-
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-RECIPES_DIR = REPO_ROOT / "recipes"
-DOCKERFILE_PATH = REPO_ROOT / "docker" / "Dockerfile"
-
-
-def check_image_exists(image_name: str) -> bool:
-    """Check if the specified Docker image is present locally."""
-    docker_bin = shutil.which("docker")
-    if not docker_bin:
-        return False
-    try:
-        res = subprocess.run(
-            [docker_bin, "image", "inspect", image_name],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return res.returncode == 0
-    except Exception:
-        return False
-
-
-def get_effective_image_name() -> str:
-    """Find the best available image: local tag first, then remote published tag."""
-    for img in (IMAGE_NAME, REMOTE_IMAGE_NAME):
-        if check_image_exists(img):
-            return img
-    return REMOTE_IMAGE_NAME
-
-
-def get_host_gemini_dir() -> Path:
-    """Return the shared host directory for Gemini config (~/.gemini or $GEMINI_HOME)."""
-    p = Path(os.environ.get("GEMINI_HOME", Path.home() / ".gemini")).resolve()
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-def get_host_cache_dir() -> Path:
-    """Return the shared host directory for cache (~/.cache/antigravity or $XDG_CACHE_HOME)."""
-    p = (Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "antigravity").resolve()
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-def ensure_shared_permissions() -> None:
-    """Ensure shared host ~/.gemini and cache directories are fully writable by both host and container."""
-    gemini_dir = get_host_gemini_dir()
-    cache_dir = get_host_cache_dir()
-    for d in (gemini_dir, cache_dir):
-        d.mkdir(parents=True, exist_ok=True)
-        try:
-            d.chmod(0o777)
-            for root, dirs, files in os.walk(d):
-                for p in dirs:
-                    try:
-                        (Path(root) / p).chmod(0o777)
-                    except OSError:
-                        pass
-                for p in files:
-                    try:
-                        (Path(root) / p).chmod(0o666)
-                    except OSError:
-                        pass
-        except OSError:
-            pass
-
-    # If directories were initialized or owned by root (via Docker daemon), fix permissions with root
-    docker_bin = shutil.which("docker") or "docker"
-    eff_img = get_effective_image_name()
-    if check_image_exists(eff_img):
-        try:
-            subprocess.run(
-                [
-                    docker_bin, "run", "--rm", "--user", "0:0",
-                    "-v", f"{gemini_dir}:/gemini:z",
-                    "-v", f"{cache_dir}:/cache:z",
-                    eff_img,
-                    "sh", "-c", "chmod -R 777 /gemini /cache 2>/dev/null || true",
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-            )
-        except Exception:
-            pass
-
-
-ensure_volume_permissions = ensure_shared_permissions
-
-
-def save_shared_credentials(api_key: str) -> bool:
-    """Persist the Gemini API key inside the shared ~/.gemini directory."""
-    try:
-        cli_dir = get_host_gemini_dir() / "antigravity-cli"
-        cli_dir.mkdir(parents=True, exist_ok=True)
-        cred_file = cli_dir / "credentials.env"
-        cred_file.write_text(f"GEMINI_API_KEY={api_key}\n")
-        cred_file.chmod(0o600)
-
-        settings_file = cli_dir / "settings.json"
-        try:
-            data = json.loads(settings_file.read_text()) if settings_file.is_file() else {}
-        except Exception:
-            data = {}
-        data["modelProvider"] = "gemini"
-        settings_file.write_text(json.dumps(data, indent=2))
-        return True
-    except Exception:
-        return False
-
-
-def load_shared_credentials() -> str | None:
-    """Read the persisted Gemini API key from the shared ~/.gemini directory."""
-    cred_file = get_host_gemini_dir() / "antigravity-cli" / "credentials.env"
-    if cred_file.is_file():
-        try:
-            for line in cred_file.read_text().splitlines():
-                if line.startswith("GEMINI_API_KEY="):
-                    val = line.split("=", 1)[1].strip()
-                    if val:
-                        return val
-        except Exception:
-            pass
-    return None
-
-
-def clear_shared_credentials() -> bool:
-    """Clear saved credentials and settings from the shared ~/.gemini directory."""
-    try:
-        cli_dir = get_host_gemini_dir() / "antigravity-cli"
-        for f in [
-            cli_dir / "credentials.env",
-            cli_dir / "antigravity-oauth-token",
-            get_host_gemini_dir() / "oauth_credentials.json",
-        ]:
-            if f.is_file():
-                try:
-                    f.unlink()
-                except OSError:
-                    pass
-        settings_file = cli_dir / "settings.json"
-        if settings_file.is_file():
-            try:
-                data = json.loads(settings_file.read_text())
-                data.pop("modelProvider", None)
-                settings_file.write_text(json.dumps(data, indent=2))
-            except Exception:
-                pass
-        return True
-    except Exception:
-        return False
-
-
-def check_shared_token() -> tuple[bool, str | None]:
-    """Check if the shared ~/.gemini directory contains an active OAuth token or session."""
-    gemini_dir = get_host_gemini_dir()
-    cli_dir = gemini_dir / "antigravity-cli"
-
-    # 1. Check known token filenames
-    for candidate in [
-        cli_dir / "antigravity-oauth-token",
-        cli_dir / "jetski-standalone-oauth-token",
-        gemini_dir / "antigravity-oauth-token",
-        gemini_dir / "jetski-standalone-oauth-token",
-        gemini_dir / "oauth_credentials.json",
-    ]:
-        if candidate.is_file() and candidate.stat().st_size > 0:
-            try:
-                data = json.loads(candidate.read_text())
-                email = data.get("id_token_email") or data.get("email")
-                return True, email
-            except Exception:
-                return True, None
-
-    # 2. Check any token / oauth credential files created in cli_dir or gemini_dir
-    for search_dir in (cli_dir, gemini_dir):
-        if search_dir.is_dir():
-            for p in search_dir.iterdir():
-                if p.is_file() and p.stat().st_size > 0:
-                    name_l = p.name.lower()
-                    if "token" in name_l or "oauth" in name_l:
-                        try:
-                            data = json.loads(p.read_text())
-                            email = data.get("id_token_email") or data.get("email")
-                            return True, email
-                        except Exception:
-                            return True, None
-
-    # 3. If agy initialized session state files in ~/.gemini
-    if cli_dir.is_dir():
-        state_files = [cli_dir / "jetski_state.pbtxt", cli_dir / "conversation_summaries.db"]
-        if any(f.is_file() and f.stat().st_size > 0 for f in state_files):
-            # Check if there is an active session or installation
-            return True, None
-
-    return False, None
-
-
-# Aliases for backward compatibility in tests
-save_volume_credentials = save_shared_credentials
-load_volume_credentials = load_shared_credentials
-clear_volume_credentials = clear_shared_credentials
-def check_volume_token_exists() -> bool:
-    has_token, _ = check_shared_token()
-    return has_token
-
-
-def check_auth_available(api_key: str | None = None) -> tuple[bool, str, str | None]:
-    """Check whether Gemini authentication (shared ~/.gemini or API key) is available.
-    Returns: (is_available, description, effective_api_key)
-    """
-    eff_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    if eff_key:
-        return True, "API Key (Provided via CLI / environment)", eff_key
-
-    saved_key = load_shared_credentials()
-    if saved_key:
-        return True, "API Key (Saved in shared ~/.gemini)", saved_key
-
-    has_token, email = check_shared_token()
-    if has_token:
-        desc = f"OAuth Token ({email}) in shared ~/.gemini" if email else "OAuth Token in shared ~/.gemini"
-        return True, desc, None
-
-    return False, "None", None
-
-
-def cmd_list(args: argparse.Namespace) -> int:
-    """List available recipes."""
-    recipes = list_recipes(RECIPES_DIR)
-    if not recipes:
-        print("No recipes found in 'recipes/' directory.")
-        return 0
-
-    print("Available recipes:")
-    print("=" * 78)
-    for r in recipes:
-        gpu_badge = "[GPU Required]" if r.gpu_default else "[GPU Optional]"
-        net_badge = "[Net: On]" if r.network_default else "[Net: Isolated]"
-        print(f"  • {r.name:<18} v{r.version:<6} {gpu_badge:<15} {net_badge}")
-        print(f"    Description: {r.description}")
-        print(f"    Timeout:     {r.timeout} | Memory: {r.resources.get('memory', 'default')}")
-        print("-" * 78)
-
-    return 0
-
-
-def cmd_run(args: argparse.Namespace) -> int:
-    """Run a specified recipe against source and destination media storage."""
-    recipe_name = args.recipe
-    source_raw = args.source
-    dest_raw = args.destination or args.dest
-
-    try:
-        recipe = load_recipe(RECIPES_DIR, recipe_name)
-    except RecipeError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
-
-    try:
-        storage_root, src_subpath, dest_subpath = resolve_storage_boundaries(
-            source_path=source_raw,
-            dest_path=dest_raw,
-        )
-    except SecurityError as e:
-        print(f"Security Error: {e}", file=sys.stderr)
-        return 1
-
-    # Detect Host GPU Acceleration capabilities
-    gpu = detect_gpu()
-
-    # Codec, backend, device and quality resolution
-    force_reencode = bool(getattr(args, "force_reencode", False) or getattr(args, "force_hevc", False))
-    max_bitrate = getattr(args, "max_bitrate", None)
-    compress_active = args.compress or force_reencode or (max_bitrate is not None)
-
-    codec = args.codec if args.codec != "auto" else gpu.recommended_codec
-    backend = args.backend if args.backend != "auto" else gpu.backend
-    quality = getattr(args, "quality", None) or getattr(args, "qp", 28)
-    device_path = args.device or gpu.device_path
-
-    # Determine effective mode (inherit from recipe if specific)
-    mode = args.mode
-    if recipe.name == "media-link":
-        mode = "link"
-    elif recipe.name == "media-remux":
-        mode = "remux"
-        args.remux = True
-    elif recipe.name == "media-compress":
-        mode = "compress"
-        compress_active = True
-    else:
-        if compress_active and mode == "link":
-            mode = "full" if args.remux else "compress"
-        elif args.remux and mode == "link":
-            mode = "remux"
-
-    # Metadata resolution preview (IMDb / Wikipedia / Cyclopedia)
-    is_offline = bool(getattr(args, "offline", False))
-    use_proxy = not is_offline and not bool(getattr(args, "no_proxy", False))
-    metadata_enabled = not is_offline
-    detected_title = None
-    detected_year = None
-    detected_author = None
-
-    src_name = Path(source_raw).name
-    clean_t, clean_y, cat = clean_title_tokens(src_name)
-
-    if metadata_enabled:
-        print(f"==> Querying online metadata for '{src_name}'...")
-        if cat == "book":
-            detected_author, detected_title, detected_year = search_cyclopedia_book(clean_t)
-            print(f"    [Book Metadata] Author: {detected_author} | Title: {detected_title} ({detected_year or 'N/A'})")
-        else:
-            detected_title, detected_year = search_imdb(clean_t, clean_y)
-            print(f"    [IMDb/Wiki Metadata] Canonical: '{detected_title}' ({detected_year or 'Unknown'}) [{cat.upper()}]")
-    else:
-        detected_title = clean_t
-        detected_year = clean_y
-
-    is_in_place_media = "Media" in src_subpath
-
-    # Verify authentication credentials (unless running strictly offline)
-    cli_api_key = getattr(args, "api_key", None)
-    has_auth, auth_type, resolved_api_key = check_auth_available(cli_api_key)
-    if not has_auth and not is_offline:
-        print("\n[-] Error: Google Antigravity authentication required.", file=sys.stderr)
-        print("    No active session found in shared ~/.gemini and no GEMINI_API_KEY provided.\n", file=sys.stderr)
-        print("    To authenticate, choose one of the following:", file=sys.stderr)
-        print("    1. Sign in or save your Gemini API key in ~/.gemini:", file=sys.stderr)
-        print("       bin/operate login\n", file=sys.stderr)
-        print("    2. Or provide a Gemini API key via CLI or environment:", file=sys.stderr)
-        print("       export GEMINI_API_KEY=\"your-gemini-api-key\"", file=sys.stderr)
-        print("       (or pass: bin/operate run ... --api-key=\"your-api-key\")\n", file=sys.stderr)
-        return 1
-
-    # Start local allowlist proxy for domain filtering and LAN protection
-    proxy = None
-    proxy_socket_path = None
-    if use_proxy:
-        import time
-        proxy_socket_path = f"/tmp/agy-proxy-{os.getpid()}-{int(time.time())}.sock"
-        proxy = EphemeralAllowlistProxy(socket_path=proxy_socket_path)
-        proxy.start()
-
-    print(f"==> Launching Antigravity Operator [{recipe.name}]")
-    print(f"    Runtime Engine: Docker Container")
-    print(f"    Storage Root:   {storage_root} (mounted to /storage:{'ro' if args.dry_run else 'rw'})")
-    print(f"    Source Target:  /storage/{src_subpath}" if src_subpath else "    Source Target:  /storage/Downloads")
-    if dest_subpath:
-        print(f"    Dest Target:    /storage/{dest_subpath}")
-    elif is_in_place_media:
-        print(f"    Dest Target:    In-place (/storage/{src_subpath})")
-    else:
-        print(f"    Dest Target:    /storage/Media/{cat.capitalize()} (Auto-categorized)")
-
-    print(f"    Pipeline Mode:  {mode.upper()} (remux: {args.remux}, compress: {compress_active})")
-    print(f"    Hardlink Mode:  Shared ext4 partition (EXDEV safe, original torrents seeding)")
-    print(f"    Authentication: {auth_type if not is_offline else 'Offline (no API required)'}")
-
-    if compress_active or mode in ("compress", "full"):
-        av1_badge = " [AV1 Hardware Encode]" if gpu.supports_av1 else ""
-        print(f"    GPU Accelerator:{gpu.name} [{backend.upper()}]{av1_badge}")
-        print(f"    Target Codec:   {codec.upper()} (Quality/QP: {quality}, Preset: {args.preset})")
-        if device_path and backend == "vaapi":
-            print(f"    DRI Device:     {device_path}")
-    else:
-        print(f"    GPU Accelerator:Disabled (Lossless / Zero-CPU mode)")
-
-    if force_reencode:
-        print(f"    Force Re-encode:YES (Re-encode unconditionally)")
-    if max_bitrate:
-        print(f"    Max Bitrate:    {max_bitrate} kbps threshold")
-    print(f"    Metadata Search:{'Enabled (IMDb / Wiki / Cyclopedia)' if metadata_enabled else 'Offline (regex cleaning only)'}")
-
-    if is_offline:
-        print("    Network:        none (Airgapped / Isolated, no external or LAN access)")
-    elif use_proxy:
-        print("    Network:        none (Hardened: Unix Domain Socket Proxy -> 127.0.0.1:3128, LAN Airgapped)")
-    else:
-        from core.container import detect_docker_network, DNS_PRIMARY, DNS_SECONDARY
-        net_name = detect_docker_network()
-        print(f"    Network:        {net_name} (Direct unproxied, Dual-DNS: {DNS_PRIMARY}, {DNS_SECONDARY})")
-    print(f"    Dry Run:        {'YES (simulation only)' if args.dry_run else 'NO (live execution)'}")
-    print(f"    Unattended:     {'YES' if args.auto else 'NO'}")
-    print("=" * 78)
-
-    use_interactive_tui = bool(getattr(args, "interactive", False))
-    use_stream = not bool(getattr(args, "no_stream", False)) and not use_interactive_tui
-
-    try:
-        eff_image = get_effective_image_name()
-        cmd = build_docker_cmd(
-            recipe=recipe,
-            storage_root=storage_root,
-            source_subpath=src_subpath,
-            dest_subpath=dest_subpath,
-            mode=mode,
-            compress=compress_active,
-            remux=args.remux,
-            enable_metadata=metadata_enabled,
-            offline=is_offline,
-            proxy_socket_path=proxy_socket_path,
-            dry_run=args.dry_run,
-            auto=args.auto,
-            quality=quality,
-            preset=args.preset,
-            codec=codec,
-            backend=backend,
-            gpu_info=gpu,
-            device_path=device_path,
-            force_hevc=force_reencode,
-            max_bitrate=max_bitrate,
-            stream=use_stream,
-            interactive_tui=use_interactive_tui,
-            detected_title=detected_title,
-            detected_year=detected_year,
-            detected_author=detected_author,
-            category=cat,
-            image_name=eff_image,
-            api_key=resolved_api_key,
-        )
-
-        image_ready = check_image_exists(eff_image)
-
-        if not image_ready:
-            print(f"==> Image '{eff_image}' not found locally. Attempting to pull from registry...")
-            docker_bin = shutil.which("docker") or "docker"
-            try:
-                res = subprocess.run([docker_bin, "pull", eff_image])
-                if res.returncode == 0:
-                    image_ready = True
-                else:
-                    print(f"[-] Remote pull failed (image '{eff_image}' not yet published or private).", file=sys.stderr)
-            except Exception as e:
-                print(f"[-] Pull attempt failed: {e}", file=sys.stderr)
-
-        if not image_ready:
-            print(f"\nError: Container image '{eff_image}' not found locally or in registry.", file=sys.stderr)
-            print("Please build the image first by running:", file=sys.stderr)
-            print("    bin/operate build\n", file=sys.stderr)
-            return 1
-
-        if args.dry_run:
-            print("\n[DRY RUN] Generated Docker execution command:")
-            escaped_cmd = [shlex.quote(c) for c in cmd]
-            print(" \\\n    ".join(escaped_cmd))
-            print("\n[DRY RUN] Launching agent in simulation mode (OPERATE_DRY_RUN=1, /storage:ro)...")
-            print("[DRY RUN] The agent will inspect files and output the execution plan without modifying storage.\n")
-
-        # Ensure volume permissions
-        ensure_volume_permissions()
-
-        return execute_container(cmd, stream=use_stream)
-    finally:
-        if proxy:
-            proxy.stop()
-
-
-def cmd_build(args: argparse.Namespace) -> int:
-    """Build the operator Docker image downstream from antigravity-sbx-patched."""
-    if not DOCKERFILE_PATH.is_file():
-        print(f"Error: Dockerfile not found at {DOCKERFILE_PATH}", file=sys.stderr)
-        return 1
-
-    docker_bin = shutil.which("docker")
-    if not docker_bin:
-        print("Error: 'docker' binary not found in PATH.", file=sys.stderr)
-        return 127
-
-    base_image = getattr(args, "base_image", None) or os.environ.get(
-        "BASE_IMAGE", "ghcr.io/retr0xcc/antigravity-sbx-patched:latest"
-    )
-
-    print(f"==> Building Docker image '{IMAGE_NAME}' & '{REMOTE_IMAGE_NAME}' (Base: {base_image})...")
-    cmd = [
-        "docker", "build",
-        "-t", IMAGE_NAME,
-        "-t", REMOTE_IMAGE_NAME,
-        "--build-arg", f"BASE_IMAGE={base_image}",
-        "-f", str(DOCKERFILE_PATH),
-        str(REPO_ROOT),
-    ]
-
-    try:
-        res = subprocess.run(cmd)
-        return res.returncode
-    except Exception as e:
-        print(f"Failed to build image: {e}", file=sys.stderr)
-        return 1
+from core.launcher import run_sandbox_planner, resolve_kit_path
+from core.plan import execute_plan, load_plan, validate_plan, PlanError
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    """Check host system readiness for running antigravity-operator."""
-    print("==> Checking Antigravity Operator Host Environment...")
+    """Check host readiness for running Antigravity Operator."""
+    print("==> Checking Host Environment for Antigravity Operator...")
     all_ok = True
 
-    # 1. Container Engine Check (Docker)
+    # 1. Sandbox Engine
+    sbx_bin = shutil.which("sbx")
     docker_bin = shutil.which("docker")
-    if docker_bin:
-        try:
-            v = subprocess.check_output([docker_bin, "--version"], text=True).strip()
-            print(f"  [✓] Docker Engine: {v}")
-        except Exception:
-            print("  [✗] Docker Engine: present but failed to execute.")
-            all_ok = False
+    if sbx_bin:
+        print(f"  [✓] Docker Sandboxes (sbx): {sbx_bin}")
+    elif docker_bin:
+        print(f"  [✓] Docker Engine (fallback): {docker_bin}")
     else:
-        print("  [✗] Docker Engine: NOT FOUND. Please install Docker.")
+        print("  [✗] Sandbox Engine: neither 'sbx' nor 'docker' found in PATH.")
         all_ok = False
 
-    # 2. Hardware and GPU Acceleration Check
+    # 2. Host Media Tools
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+    mkvmerge = shutil.which("mkvmerge")
+    if ffmpeg and ffprobe:
+        print(f"  [✓] Host FFmpeg & FFprobe:  {ffmpeg}")
+    else:
+        print("  [!] Host FFmpeg: not found on host (needed for host transcode execution).")
+
+    if mkvmerge:
+        print(f"  [✓] Host MKVToolNix:        {mkvmerge}")
+    else:
+        print("  [-] Host MKVToolNix:        not installed (ffmpeg used as remux fallback).")
+
+    # 3. Hardware Acceleration
     gpu = detect_gpu()
     if gpu.is_hardware:
-        av1_badge = " [AV1 Hardware Encode: Supported]" if gpu.supports_av1 else ""
-        print(f"  [✓] Hardware GPU: {gpu.name} ({gpu.backend.upper()}){av1_badge}")
+        av1_badge = " [AV1 Encode Supported]" if gpu.supports_av1 else ""
+        print(f"  [✓] Hardware GPU:           {gpu.name} ({gpu.backend.upper()}){av1_badge}")
         if gpu.device_path:
-            print(f"      DRI Device:   {gpu.device_path}")
-        print(f"      Codecs:       {', '.join(c.upper() for c in gpu.supported_codecs)} (Default: {gpu.recommended_codec.upper()})")
+            print(f"      DRI Device:             {gpu.device_path}")
+        print(f"      Codecs:                 {', '.join(c.upper() for c in gpu.supported_codecs)}")
+        print(f"      Default Encoder:        {gpu.recommended_encoder}")
     else:
-        print(f"  [-] Hardware GPU: None detected. Software encoding fallback will be used ({gpu.recommended_encoder}).")
+        print(f"  [-] Hardware GPU:           None detected (fallback to CPU: {gpu.recommended_encoder})")
 
-    # 3. Multimedia tools check
-    vainfo = shutil.which("vainfo")
-    if vainfo:
-        print(f"  [✓] Host VA-API tools: {vainfo}")
-    ffmpeg_bin = shutil.which("ffmpeg")
-    if ffmpeg_bin:
-        print(f"  [✓] Host FFmpeg: {ffmpeg_bin}")
-    else:
-        print("  [-] Host FFmpeg: not on host (container provides isolated ffmpeg/vaapi/nvenc).")
-
-    # 4. Recipes catalog check
-    if RECIPES_DIR.is_dir():
-        recipes = list_recipes(RECIPES_DIR)
-        print(f"  [✓] Recipes Catalog: {len(recipes)} valid recipe(s) loaded from {RECIPES_DIR}")
-    else:
-        print(f"  [✗] Recipes Directory: missing {RECIPES_DIR}")
-        all_ok = False
-
-    # 5. Operator Container Image Check
-    eff_img = get_effective_image_name()
-    image_ready = check_image_exists(eff_img)
-    if image_ready:
-        print(f"  [✓] Operator Image: {eff_img} (built & ready)")
-    else:
-        print(f"  [-] Operator Image: '{IMAGE_NAME}' not built yet (run 'bin/operate build')")
-
-    # 6. Antigravity AI Agent Authentication Check
-    has_auth, auth_type, _ = check_auth_available()
-    if has_auth:
-        print(f"  [✓] Gemini Authentication: {auth_type}")
-    else:
-        print("  [-] Gemini Authentication: not configured yet")
-        print("      Run 'bin/operate login' or export GEMINI_API_KEY='your-key'")
+    # 4. Kit Location
+    kit_path = resolve_kit_path()
+    print(f"  [✓] Media Operator Kit:     {kit_path}")
 
     if all_ok:
-        print("\nAll core host checks passed! You are ready to run `operate`.")
+        print("\nAll core host requirements are satisfied!")
         return 0
     else:
-        print("\nSome host requirements are missing. Review the errors above.")
+        print("\nSome components are missing. Review messages above.", file=sys.stderr)
         return 1
 
 
-def _run_interactive_oauth(docker_bin: str, eff_image: str) -> int:
-    """Launch interactive Google OAuth session inside the container."""
-    host_gemini = get_host_gemini_dir()
-    host_cache = get_host_cache_dir()
-    ensure_volume_permissions()
+def cmd_plan(args: argparse.Namespace) -> int:
+    """Run read-only sandbox planning to produce plan.json and summary.md."""
+    src = Path(args.source).resolve()
+    dst = Path(args.dest or src.parent).resolve()
+    out = Path(args.out or (Path.cwd() / "out")).resolve()
 
-    # If settings.json forces modelProvider: gemini, reset it so agy falls back to Google OAuth
-    settings_file = host_gemini / "antigravity-cli" / "settings.json"
-    if settings_file.is_file():
-        try:
-            data = json.loads(settings_file.read_text())
-            if data.pop("modelProvider", None) is not None:
-                settings_file.write_text(json.dumps(data, indent=2))
-        except Exception:
-            pass
+    ret, plan_file = run_sandbox_planner(
+        source_dir=src,
+        dest_dir=dst,
+        out_dir=out,
+        mode=args.mode,
+        quality=args.quality,
+        max_bitrate=args.max_bitrate,
+        force_reencode=args.force_reencode,
+        headless=getattr(args, "headless", False),
+    )
 
-    print("\n==> Launching interactive Antigravity login inside container...")
-    print("    Follow the on-screen prompt to sign in with your Google account.")
-    print(f"    Credentials will be stored persistently in shared directory '{host_gemini}'.\n")
-
-    cmd = [
-        docker_bin, "run", "-it", "--rm",
-        "--name", "agy-operator-login",
-        "--net=host",
-        "-v", f"{host_gemini}:/home/agent/.gemini:z",
-        "-v", f"{host_cache}:/home/agent/.cache:z",
-        eff_image,
-        "agy",
-    ]
-    ret = subprocess.run(cmd).returncode
-    ensure_volume_permissions()
-
-    has_token, email = check_shared_token()
-    if has_token:
-        acct = f" ({email})" if email else ""
-        print(f"\n[✓] OAuth token detected{acct} and stored in shared directory '{host_gemini}'.")
-        print("    You can now run recipes with: bin/operate run <recipe> <source>")
+    if plan_file and plan_file.is_file():
+        print(f"[✓] Plan generated successfully: {plan_file}")
+        print(f"    To execute this plan on host, run: bin/operate apply {plan_file}")
         return 0
-    elif ret == 0:
-        print("\n[!] Interactive session finished. Check authentication status with 'bin/operate login --status'.")
-        return 0
-    else:
-        print(f"\n[-] Login process exited with code {ret}", file=sys.stderr)
+    elif ret != 0:
         return ret
+    else:
+        print("[-] Sandbox finished, but no plan.json was generated.", file=sys.stderr)
+        return 1
 
 
-def cmd_login(args: argparse.Namespace) -> int:
-    """Configure and persist Gemini authentication in the shared host directory."""
-    docker_bin = shutil.which("docker") or "docker"
-    host_gemini = get_host_gemini_dir()
-
-    # Action 1: Logout
-    if getattr(args, "logout", False):
-        print(f"==> Removing saved Antigravity credentials from shared directory '{host_gemini}'...")
-        if clear_shared_credentials():
-            print("[✓] Credentials removed successfully.")
-            return 0
-        else:
-            print("[-] Failed to clear shared credentials.", file=sys.stderr)
-            return 1
-
-    # Action 2: Check status
-    if getattr(args, "status", False):
-        has_auth, auth_type, _ = check_auth_available()
-        print("==> Current Antigravity Authentication Status:")
-        if has_auth:
-            print(f"  [✓] Active: {auth_type}")
-            return 0
-        else:
-            print("  [-] Not authenticated. Run 'bin/operate login' to configure.")
-            return 1
-
-    eff_image = get_effective_image_name()
-    if not check_image_exists(eff_image):
-        print(f"==> Image '{eff_image}' not found locally. Attempting to pull...")
-        res = subprocess.run([docker_bin, "pull", eff_image])
-        if res.returncode != 0:
-            print("[-] Pull failed. Please build the image with 'bin/operate build'.", file=sys.stderr)
-            return 1
-
-    ensure_volume_permissions()
-
-    # Action 3: API Key passed via CLI flag
-    cli_key = getattr(args, "api_key", None)
-    if cli_key:
-        cli_key = cli_key.strip()
-        print(f"==> Saving provided Gemini API Key to shared directory '{host_gemini}'...")
-        if save_shared_credentials(cli_key):
-            print("[✓] Gemini API Key successfully saved and persisted in shared directory.")
-            print("    You can now run tasks with: bin/operate run <recipe> <source>")
-            return 0
-        else:
-            print("[-] Failed to save credentials to shared directory.", file=sys.stderr)
-            return 1
-
-    # Action 4: Explicit OAuth flag requested
-    if getattr(args, "oauth", False):
-        return _run_interactive_oauth(docker_bin, eff_image)
-
-    # Action 5: Interactive setup menu
-    print("=" * 72)
-    print("  Antigravity Operator Authentication Setup")
-    print("=" * 72)
-    print("  The operator runs headlessly inside Docker with credentials persisted")
-    print(f"  in the shared directory '{host_gemini}'.\n")
-    print("  Choose an authentication method:")
-    print("  1. Google OAuth")
-    print("  2. Gemini API Key\n")
+def cmd_apply(args: argparse.Namespace) -> int:
+    """Safely apply a generated plan.json on the host filesystem."""
+    plan_file = Path(args.plan_file).resolve()
+    if not plan_file.is_file():
+        print(f"[-] Plan file not found: {plan_file}", file=sys.stderr)
+        return 1
 
     try:
-        user_choice = input("  Select [1 or 2, default: 1]: ").strip()
-    except (EOFError, KeyboardInterrupt):
-        print("\nAborted.")
+        ok = execute_plan(plan_file, dry_run=args.dry_run)
+        if ok:
+            print("\n[✓] Plan execution completed successfully!")
+            return 0
+        else:
+            print("\n[-] Plan execution finished with errors.", file=sys.stderr)
+            return 1
+    except PlanError as e:
+        print(f"[-] Plan error: {e}", file=sys.stderr)
         return 1
 
-    if user_choice in ("2", "key", "api_key"):
-        # Prompt for Gemini API Key
+
+def cmd_run(args: argparse.Namespace) -> int:
+    """Full workflow: generate plan in read-only sandbox, then prompt to apply on host."""
+    src = Path(args.source).resolve()
+    dst = Path(args.dest or src.parent).resolve()
+    out = Path(args.out or (Path.cwd() / "out")).resolve()
+
+    ret, plan_file = run_sandbox_planner(
+        source_dir=src,
+        dest_dir=dst,
+        out_dir=out,
+        mode=args.mode,
+        quality=args.quality,
+        max_bitrate=args.max_bitrate,
+        force_reencode=args.force_reencode,
+        headless=getattr(args, "headless", False),
+    )
+
+    if ret != 0 or not plan_file or not plan_file.is_file():
+        print("[-] Planning failed or produced no plan.json.", file=sys.stderr)
+        return ret or 1
+
+    # Ask for confirmation unless --yes is specified
+    if getattr(args, "yes", False):
+        user_apply = True
+    else:
         try:
-            entered_key = input("  Enter Gemini API Key: ").strip()
-        except (EOFError, KeyboardInterrupt):
+            choice = input("Do you want to apply this plan on the host now? [y/N]: ").strip().lower()
+            user_apply = choice in ("y", "yes")
+        except (KeyboardInterrupt, EOFError):
             print("\nAborted.")
             return 1
 
-        if not entered_key:
-            print("[-] API key cannot be empty.", file=sys.stderr)
-            return 1
+    if not user_apply:
+        print(f"Skipped execution. You can apply it later with: bin/operate apply {plan_file}")
+        return 0
 
-        print(f"==> Persisting Gemini API Key in shared directory '{host_gemini}'...")
-        if save_shared_credentials(entered_key):
-            print("[✓] Gemini API Key saved successfully!")
-            print("    You can now run recipes with: bin/operate run <recipe> <source>")
-            return 0
-        else:
-            print("[-] Failed to save credentials to shared directory.", file=sys.stderr)
-            return 1
-
-    return _run_interactive_oauth(docker_bin, eff_image)
+    return cmd_apply(argparse.Namespace(plan_file=str(plan_file), dry_run=args.dry_run))
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="operate",
-        description="Headless AI agent runner for automated media hardlinks, Muxpress remuxing, and hardware AV1/HEVC compression.",
+        prog="bin/operate",
+        description="Antigravity Media Operator: Read-Only Sandbox Planner & Host Executor",
     )
-    subparsers = parser.add_subparsers(dest="subcommand", required=True)
-
-    # Subcommand: list
-    p_list = subparsers.add_parser("list", help="List available processing recipes.")
-    p_list.set_defaults(func=cmd_list)
-
-    # Subcommand: run
-    p_run = subparsers.add_parser("run", help="Run a recipe on media storage.")
-    p_run.add_argument("recipe", help="Name of recipe (e.g., media-pipeline).")
-    p_run.add_argument("source", help="Source folder in Downloads or Media (e.g. /storage/Downloads/Series).")
-    p_run.add_argument("destination", nargs="?", default=None, help="Optional destination folder (e.g. /storage/Media/TV).")
-    p_run.add_argument("-d", "--dest", default=None, help="Destination folder (alternative flag).")
-    p_run.add_argument(
-        "--mode",
-        choices=["link", "remux", "compress", "full"],
-        default="link",
-        help="Operation mode: 'link' (hardlinks), 'remux' (merge to single MKV without transcode), 'compress' (re-encode), 'full' (remux + compress).",
-    )
-    p_run.add_argument(
-        "--codec",
-        choices=["auto", "av1", "hevc", "h264"],
-        default="auto",
-        help="Video codec: 'auto' (av1 for RDNA3/Ada, hevc for older), 'av1', 'hevc', 'h264'.",
-    )
-    p_run.add_argument(
-        "--backend",
-        choices=["auto", "vaapi", "nvenc", "software"],
-        default="auto",
-        help="Encoder backend: 'auto' (autodetect AMD/Intel VA-API or NVIDIA NVENC), 'vaapi', 'nvenc', 'software'.",
-    )
-    p_run.add_argument(
-        "--device",
-        default=None,
-        help="Custom DRI render node path for VA-API (e.g. /dev/dri/renderD128).",
-    )
-    p_run.add_argument(
-        "--remux",
-        action="store_true",
-        help="Merge external audio/subtitles/fonts into single MKV containers instead of separate hardlinks.",
-    )
-    p_run.add_argument(
-        "--compress",
-        action="store_true",
-        help="Enable GPU hardware compression (AV1 / HEVC).",
-    )
-    p_run.add_argument(
-        "--force", "--force-reencode", "--force-hevc",
-        dest="force_reencode",
-        action="store_true",
-        help="Force re-encoding even if video stream is already in target codec (useful for heavy BDRips with high bitrates).",
-    )
-    p_run.add_argument(
-        "--max-bitrate",
-        type=int,
-        default=None,
-        help="Re-encode if video bitrate exceeds this threshold in kbps (e.g. 4500).",
-    )
-    p_run.add_argument(
-        "--offline", "--no-network",
-        dest="offline",
-        action="store_true",
-        help="Disable network access entirely (runs container with --network=none and uses offline regex for metadata).",
-    )
-    p_run.add_argument(
-        "--no-proxy",
-        dest="no_proxy",
-        action="store_true",
-        help="Bypass the local allowlist proxy and allow direct unconstrained network access.",
-    )
-    p_run.add_argument(
-        "-q", "--quality", "--qp",
-        dest="quality",
-        type=int,
-        default=28,
-        help="Video compression quality: global_quality for VA-API, QP for NVENC, CRF for CPU (default: 28).",
-    )
-    p_run.add_argument(
-        "--preset",
-        default="p6",
-        help="Encoder quality preset (default: p6).",
-    )
-    p_run.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Simulate actions, resolve titles, and output plan without modifying files.",
-    )
-    p_run.add_argument(
-        "-i", "--interactive",
-        action="store_true",
-        help="Launch agent with full interactive TUI mode (useful for debugging).",
-    )
-    p_run.add_argument(
-        "--no-stream",
-        action="store_true",
-        help="Disable real-time action streaming and print only final turn response.",
-    )
-    p_run.add_argument(
-        "--auto",
-        action="store_true",
-        help="Run without interactive confirmation prompts (unattended mode).",
-    )
-    p_run.add_argument(
-        "--api-key",
-        dest="api_key",
-        default=None,
-        help="Gemini API key for non-interactive headless authentication (or set GEMINI_API_KEY env var).",
-    )
-    p_run.set_defaults(func=cmd_run)
-
-    # Subcommand: login
-    p_login = subparsers.add_parser("login", help="Configure and persist Antigravity credentials in container volume.")
-    p_login.add_argument("--key", "--api-key", dest="api_key", default=None, help="Gemini API Key to store in container volume.")
-    p_login.add_argument("--oauth", action="store_true", help="Launch interactive Google OAuth browser authentication.")
-    p_login.add_argument("--status", action="store_true", help="Check current authentication status in container volume.")
-    p_login.add_argument("--logout", action="store_true", help="Remove saved credentials from container volume.")
-    p_login.set_defaults(func=cmd_login)
-
-    # Subcommand: build
-    p_build = subparsers.add_parser("build", help="Build the operator Docker container image.")
-    p_build.add_argument(
-        "--base-image",
-        default="ghcr.io/retr0xcc/antigravity-sbx-patched:latest",
-        help="Base image (default: ghcr.io/retr0xcc/antigravity-sbx-patched:latest).",
-    )
-    p_build.set_defaults(func=cmd_build)
+    subparsers = parser.add_subparsers(dest="subcommand", help="Available subcommands")
 
     # Subcommand: doctor
-    p_doc = subparsers.add_parser("doctor", help="Check host dependencies and readiness.")
-    p_doc.set_defaults(func=cmd_doctor)
+    subparsers.add_parser("doctor", help="Check host readiness (GPU, SBX/Docker, media tools)")
+
+    # Common arguments helper
+    def add_planning_args(p: argparse.ArgumentParser):
+        p.add_argument("source", help="Path to input media directory (mounted read-only)")
+        p.add_argument("--dest", "-d", help="Target library destination directory on host")
+        p.add_argument("--out", "-o", default="./out", help="Output directory for generated plan (default: ./out)")
+        p.add_argument("--mode", "-m", choices=["link", "remux", "compress", "full"], default="link", help="Operating mode (default: link)")
+        p.add_argument("--quality", "-q", type=int, default=28, help="Transcode target quality (QP/CRF, default: 28)")
+        p.add_argument("--max-bitrate", type=int, help="Maximum video bitrate threshold in kbps")
+        p.add_argument("--force-reencode", action="store_true", help="Force re-encoding even if codec matches")
+        p.add_argument("--headless", action="store_true", help="Run planning non-interactively and exit automatically")
+        p.add_argument("--dry-run", action="store_true", help="Simulate execution without modifying files")
+
+    # Subcommand: plan
+    p_plan = subparsers.add_parser("plan", help="Generate plan.json inside read-only sandbox without applying")
+    add_planning_args(p_plan)
+
+    # Subcommand: apply
+    p_apply = subparsers.add_parser("apply", help="Execute an existing plan.json on the host")
+    p_apply.add_argument("plan_file", help="Path to plan.json")
+    p_apply.add_argument("--dry-run", action="store_true", help="Simulate execution without modifying files")
+
+    # Subcommand: run
+    p_run = subparsers.add_parser("run", help="Generate plan in sandbox, review summary, and apply on host")
+    add_planning_args(p_run)
+    p_run.add_argument("-y", "--yes", action="store_true", help="Automatically apply plan without interactive confirmation")
 
     args = parser.parse_args(argv)
-    return args.func(args)
+
+    if not args.subcommand:
+        parser.print_help()
+        return 0
+
+    if args.subcommand == "doctor":
+        return cmd_doctor(args)
+    elif args.subcommand == "plan":
+        return cmd_plan(args)
+    elif args.subcommand == "apply":
+        return cmd_apply(args)
+    elif args.subcommand == "run":
+        return cmd_run(args)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -9,5 +9,6 @@ __pycache__/
 
 # SBX local execution outputs
 out/
+workspace/
 .sbx/
 

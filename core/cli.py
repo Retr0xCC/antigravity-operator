@@ -20,14 +20,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     all_ok = True
 
     # 1. Sandbox Engine
-    docker_bin = shutil.which("docker")
     sbx_bin = shutil.which("sbx")
-    if docker_bin:
-        print(f"  [✓] Docker Engine:          {docker_bin}")
-    elif sbx_bin:
+    docker_bin = shutil.which("docker")
+    if sbx_bin:
         print(f"  [✓] Docker Sandboxes (sbx): {sbx_bin}")
+    elif docker_bin:
+        print(f"  [!] Docker Sandboxes (sbx): not found (fallback to docker: {docker_bin})")
     else:
-        print("  [✗] Sandbox Engine: neither 'docker' nor 'sbx' found in PATH.")
+        print("  [✗] Sandbox Engine: neither 'sbx' nor 'docker' found in PATH.")
         all_ok = False
 
     # 2. Host Media Tools

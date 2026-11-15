@@ -71,6 +71,84 @@ def ensure_volume_permissions() -> None:
                 pass
 
 
+def save_volume_credentials(api_key: str) -> bool:
+    """Persist the Gemini API key inside the Docker volume 'agy-operator-config'."""
+    docker_bin = shutil.which("docker") or "docker"
+    for img in ("alpine:latest", IMAGE_NAME, REMOTE_IMAGE_NAME):
+        if check_image_exists(img):
+            try:
+                script = (
+                    "mkdir -p /home/agent/.gemini/antigravity-cli && "
+                    f"printf 'GEMINI_API_KEY=%s\\n' {shlex.quote(api_key)} > /home/agent/.gemini/antigravity-cli/credentials.env && "
+                    "printf '{\"modelProvider\": \"gemini\"}\\n' > /home/agent/.gemini/antigravity-cli/settings.json && "
+                    "chown -R 1000:1000 /home/agent/.gemini && "
+                    "chmod 600 /home/agent/.gemini/antigravity-cli/credentials.env"
+                )
+                cmd = [
+                    docker_bin, "run", "--rm",
+                    "--user", "0:0",
+                    "-v", "agy-operator-config:/home/agent/.gemini",
+                    img,
+                    "sh", "-c", script,
+                ]
+                res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return res.returncode == 0
+            except Exception:
+                pass
+    return False
+
+
+def load_volume_credentials() -> str | None:
+    """Read the persisted Gemini API key from Docker volume 'agy-operator-config'."""
+    docker_bin = shutil.which("docker") or "docker"
+    for img in ("alpine:latest", IMAGE_NAME, REMOTE_IMAGE_NAME):
+        if check_image_exists(img):
+            try:
+                cmd = [
+                    docker_bin, "run", "--rm",
+                    "-v", "agy-operator-config:/home/agent/.gemini",
+                    img,
+                    "sh", "-c",
+                    "cat /home/agent/.gemini/antigravity-cli/credentials.env 2>/dev/null || true",
+                ]
+                res = subprocess.run(cmd, capture_output=True, text=True)
+                if res.returncode == 0:
+                    for line in res.stdout.splitlines():
+                        if line.startswith("GEMINI_API_KEY="):
+                            val = line.split("=", 1)[1].strip()
+                            if val:
+                                return val
+            except Exception:
+                pass
+    return None
+
+
+def clear_volume_credentials() -> bool:
+    """Clear saved credentials and settings from Docker volume 'agy-operator-config'."""
+    docker_bin = shutil.which("docker") or "docker"
+    for img in ("alpine:latest", IMAGE_NAME, REMOTE_IMAGE_NAME):
+        if check_image_exists(img):
+            try:
+                script = (
+                    "rm -f /home/agent/.gemini/antigravity-cli/credentials.env "
+                    "/home/agent/.gemini/antigravity-cli/antigravity-oauth-token "
+                    "/home/agent/.gemini/oauth_credentials.json 2>/dev/null || true; "
+                    "printf '{}' > /home/agent/.gemini/antigravity-cli/settings.json 2>/dev/null || true"
+                )
+                cmd = [
+                    docker_bin, "run", "--rm",
+                    "--user", "0:0",
+                    "-v", "agy-operator-config:/home/agent/.gemini",
+                    img,
+                    "sh", "-c", script,
+                ]
+                res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return res.returncode == 0
+            except Exception:
+                pass
+    return False
+
+
 def check_volume_token_exists() -> bool:
     """Check if the persistent Docker volume 'agy-operator-config' contains an OAuth token."""
     docker_bin = shutil.which("docker") or "docker"
@@ -81,7 +159,9 @@ def check_volume_token_exists() -> bool:
                     docker_bin, "run", "--rm",
                     "-v", "agy-operator-config:/home/agent/.gemini",
                     img,
-                    "test", "-s", "/home/agent/.gemini/antigravity-cli/antigravity-oauth-token",
+                    "sh", "-c",
+                    "test -s /home/agent/.gemini/antigravity-cli/antigravity-oauth-token || "
+                    "test -s /home/agent/.gemini/oauth_credentials.json",
                 ]
                 res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 return res.returncode == 0
@@ -90,16 +170,22 @@ def check_volume_token_exists() -> bool:
     return False
 
 
-def check_auth_available(api_key: str | None = None) -> tuple[bool, str]:
-    """Check whether Gemini authentication (container volume OAuth token or API key) is available."""
+def check_auth_available(api_key: str | None = None) -> tuple[bool, str, str | None]:
+    """Check whether Gemini authentication (container volume or API key) is available.
+    Returns: (is_available, description, effective_api_key)
+    """
     eff_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if eff_key:
-        return True, "API Key (GEMINI_API_KEY / GOOGLE_API_KEY)"
+        return True, "API Key (Provided via CLI / environment)", eff_key
+
+    persisted_key = load_volume_credentials()
+    if persisted_key:
+        return True, "API Key (Persisted in container volume 'agy-operator-config')", persisted_key
 
     if check_volume_token_exists():
-        return True, "OAuth Token (Container volume 'agy-operator-config')"
+        return True, "OAuth Token (Container volume 'agy-operator-config')", None
 
-    return False, "None"
+    return False, "None", None
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -199,14 +285,14 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     # Verify authentication credentials (unless running strictly offline)
     cli_api_key = getattr(args, "api_key", None)
-    has_auth, auth_type = check_auth_available(cli_api_key)
+    has_auth, auth_type, resolved_api_key = check_auth_available(cli_api_key)
     if not has_auth and not is_offline:
         print("\n[-] Error: Google Antigravity authentication required.", file=sys.stderr)
         print("    No active session found in container volume 'agy-operator-config' and no GEMINI_API_KEY provided.\n", file=sys.stderr)
         print("    To authenticate, choose one of the following:", file=sys.stderr)
-        print("    1. Sign in interactively with your Google account:", file=sys.stderr)
+        print("    1. Sign in or save your Gemini API key inside the container volume:", file=sys.stderr)
         print("       bin/operate login\n", file=sys.stderr)
-        print("    2. Or provide a Gemini API key:", file=sys.stderr)
+        print("    2. Or provide a Gemini API key via CLI or environment:", file=sys.stderr)
         print("       export GEMINI_API_KEY=\"your-gemini-api-key\"", file=sys.stderr)
         print("       (or pass: bin/operate run ... --api-key=\"your-api-key\")\n", file=sys.stderr)
         return 1
@@ -295,7 +381,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             detected_author=detected_author,
             category=cat,
             image_name=eff_image,
-            api_key=cli_api_key,
+            api_key=resolved_api_key,
         )
 
         image_ready = check_image_exists(eff_image)
@@ -423,7 +509,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"  [-] Operator Image: '{IMAGE_NAME}' not built yet (run 'bin/operate build')")
 
     # 6. Antigravity AI Agent Authentication Check
-    has_auth, auth_type = check_auth_available()
+    has_auth, auth_type, _ = check_auth_available()
     if has_auth:
         print(f"  [✓] Gemini Authentication: {auth_type}")
     else:
@@ -438,22 +524,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         return 1
 
 
-def cmd_login(args: argparse.Namespace) -> int:
-    """Interactively authenticate with Google Antigravity inside the persistent container volume."""
-    eff_image = get_effective_image_name()
-    docker_bin = shutil.which("docker") or "docker"
-
-    if not check_image_exists(eff_image):
-        print(f"==> Image '{eff_image}' not found locally. Attempting to pull...")
-        res = subprocess.run([docker_bin, "pull", eff_image])
-        if res.returncode != 0:
-            print("[-] Pull failed. Please build the image with 'bin/operate build'.", file=sys.stderr)
-            return 1
-
-    # Ensure Docker volumes are owned by container user 'agent' (UID 1000)
+def _run_interactive_oauth(docker_bin: str, eff_image: str) -> int:
+    """Launch interactive Google OAuth session inside the container."""
     ensure_volume_permissions()
+    # Reset settings.json so it does not block OAuth with modelProvider=gemini
+    clear_volume_credentials()
 
-    print("==> Launching interactive Antigravity login inside container...")
+    print("\n==> Launching interactive Antigravity login inside container...")
     print("    Follow the on-screen prompt to sign in with your Google account.")
     print("    Credentials will be stored persistently in Docker volume 'agy-operator-config'.\n")
 
@@ -466,7 +543,111 @@ def cmd_login(args: argparse.Namespace) -> int:
         eff_image,
         "agy",
     ]
-    return subprocess.run(cmd).returncode
+    ret = subprocess.run(cmd).returncode
+    ensure_volume_permissions()
+
+    if check_volume_token_exists():
+        print("\n[✓] OAuth token detected and stored in Docker volume 'agy-operator-config'.")
+        print("    You can now run recipes with: bin/operate run <recipe> <source>")
+        return 0
+    elif ret == 0:
+        print("\n[!] Interactive session finished. Check authentication status with 'bin/operate login --status'.")
+        return 0
+    else:
+        print(f"\n[-] Login process exited with code {ret}", file=sys.stderr)
+        return ret
+
+
+def cmd_login(args: argparse.Namespace) -> int:
+    """Configure and persist Gemini authentication inside the container volume."""
+    docker_bin = shutil.which("docker") or "docker"
+
+    # Action 1: Logout
+    if getattr(args, "logout", False):
+        print("==> Removing saved Antigravity credentials from Docker volume 'agy-operator-config'...")
+        if clear_volume_credentials():
+            print("[✓] Credentials removed successfully.")
+            return 0
+        else:
+            print("[-] Failed to clear volume credentials.", file=sys.stderr)
+            return 1
+
+    # Action 2: Check status
+    if getattr(args, "status", False):
+        has_auth, auth_type, _ = check_auth_available()
+        print("==> Current Antigravity Authentication Status:")
+        if has_auth:
+            print(f"  [✓] Active: {auth_type}")
+            return 0
+        else:
+            print("  [-] Not authenticated. Run 'bin/operate login' to configure.")
+            return 1
+
+    eff_image = get_effective_image_name()
+    if not check_image_exists(eff_image):
+        print(f"==> Image '{eff_image}' not found locally. Attempting to pull...")
+        res = subprocess.run([docker_bin, "pull", eff_image])
+        if res.returncode != 0:
+            print("[-] Pull failed. Please build the image with 'bin/operate build'.", file=sys.stderr)
+            return 1
+
+    ensure_volume_permissions()
+
+    # Action 3: API Key passed via CLI flag
+    cli_key = getattr(args, "api_key", None)
+    if cli_key:
+        cli_key = cli_key.strip()
+        print("==> Saving provided Gemini API Key to container volume 'agy-operator-config'...")
+        if save_volume_credentials(cli_key):
+            print("[✓] Gemini API Key successfully saved and persisted in container volume.")
+            print("    You can now run tasks with: bin/operate run <recipe> <source>")
+            return 0
+        else:
+            print("[-] Failed to save credentials to volume.", file=sys.stderr)
+            return 1
+
+    # Action 4: Explicit OAuth flag requested
+    if getattr(args, "oauth", False):
+        return _run_interactive_oauth(docker_bin, eff_image)
+
+    # Action 5: Interactive setup menu
+    print("=" * 72)
+    print("  Antigravity Operator Authentication Setup")
+    print("=" * 72)
+    print("  The operator runs headlessly inside Docker. Credentials persist safely")
+    print("  inside the dedicated volume 'agy-operator-config' (host remains clean).\n")
+    print("  Choose an authentication method:")
+    print("  1. Gemini API Key (Recommended - persistent, rock-solid in headless/Docker)")
+    print("     Get a free key at https://aistudio.google.com/apikey")
+    print("  2. Interactive Google OAuth (Browser sign-in via agy)\n")
+
+    try:
+        user_choice = input("  Select [1 or 2, default: 1]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\nAborted.")
+        return 1
+
+    if user_choice in ("2", "oauth"):
+        return _run_interactive_oauth(docker_bin, eff_image)
+
+    # Prompt for Gemini API Key
+    try:
+        entered_key = input("  Enter Gemini API Key (or press Enter for OAuth): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\nAborted.")
+        return 1
+
+    if not entered_key:
+        return _run_interactive_oauth(docker_bin, eff_image)
+
+    print("==> Persisting Gemini API Key in Docker volume 'agy-operator-config'...")
+    if save_volume_credentials(entered_key):
+        print("[✓] Gemini API Key saved successfully!")
+        print("    You can now run recipes with: bin/operate run <recipe> <source>")
+        return 0
+    else:
+        print("[-] Failed to save credentials to Docker volume.", file=sys.stderr)
+        return 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -584,7 +765,11 @@ def main(argv: list[str] | None = None) -> int:
     p_run.set_defaults(func=cmd_run)
 
     # Subcommand: login
-    p_login = subparsers.add_parser("login", help="Authenticate with Google Antigravity via interactive browser login.")
+    p_login = subparsers.add_parser("login", help="Configure and persist Antigravity credentials in container volume.")
+    p_login.add_argument("--key", "--api-key", dest="api_key", default=None, help="Gemini API Key to store in container volume.")
+    p_login.add_argument("--oauth", action="store_true", help="Launch interactive Google OAuth browser authentication.")
+    p_login.add_argument("--status", action="store_true", help="Check current authentication status in container volume.")
+    p_login.add_argument("--logout", action="store_true", help="Remove saved credentials from container volume.")
     p_login.set_defaults(func=cmd_login)
 
     # Subcommand: build

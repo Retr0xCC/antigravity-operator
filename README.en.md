@@ -113,15 +113,24 @@ Audits Docker Engine, detects host GPUs (AMD Radeon VA-API, NVIDIA NVENC), check
 
 ### 2. Antigravity AI Agent Authentication
 The operator is fully self-contained and **does not require Antigravity installed on the host**. Credentials persist inside the dedicated Docker volume `agy-operator-config`:
-* **Interactive Browser Login (OAuth):**
+* **Configure Authentication (API Key or Google OAuth):**
   ```bash
   bin/operate login
   ```
-  Launches interactive container authentication and persists credentials inside Docker volume `agy-operator-config`.
-* **Or via Gemini API Key:**
+  Allows you to enter your Gemini API Key (get a free key at https://aistudio.google.com/apikey) or authenticate with Google OAuth. The key is securely saved into Docker volume `agy-operator-config` and automatically utilized across all subsequent runs.
+* **Quickly Save API Key via CLI flag:**
+  ```bash
+  bin/operate login --key="AIzaSy..."
+  ```
+* **Or via Environment Variable:**
   ```bash
   export GEMINI_API_KEY="AIzaSy..."
-  # or pass flag: bin/operate run ... --api-key="AIzaSy..."
+  # or pass runtime flag: bin/operate run ... --api-key="AIzaSy..."
+  ```
+* **Check Status or Logout:**
+  ```bash
+  bin/operate login --status
+  bin/operate login --logout
   ```
 
 ### 3. Running Recipes

@@ -434,29 +434,29 @@ def build_docker_cmd(
         category=category,
     )
 
+    agy_args: list[str] = [
+        "agy",
+        "--dangerously-skip-permissions",
+        "--effort", effort_level,
+    ]
+
+    # Explicitly activate Gemini API mode in agy when an API key is present
+    if effective_api_key:
+        agy_args.append('--settings={"modelProvider":"gemini"}')
+
     if interactive_tui:
-        cmd.extend([
-            "agy",
-            "--dangerously-skip-permissions",
-            "--effort", effort_level,
-            f"-i={agent_prompt}",
-        ])
+        agy_args.append(f"-i={agent_prompt}")
     elif stream:
-        cmd.extend([
-            "agy",
-            "--dangerously-skip-permissions",
-            "--effort", effort_level,
+        agy_args.extend([
             "--output-format", "stream-json",
             "--print-timeout=0",
             f"-p={agent_prompt}",
         ])
     else:
-        cmd.extend([
-            "agy",
-            "--dangerously-skip-permissions",
-            "--effort", effort_level,
+        agy_args.extend([
             "--print-timeout=0",
             f"--print={agent_prompt}",
         ])
 
+    cmd.extend(agy_args)
     return cmd

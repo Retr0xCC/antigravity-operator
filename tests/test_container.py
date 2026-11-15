@@ -98,6 +98,21 @@ class TestContainer(unittest.TestCase):
         cmd_str = " ".join(cmd)
         self.assertIn("GEMINI_API_KEY=test-gemini-key-12345", cmd_str)
         self.assertIn("GOOGLE_API_KEY=test-gemini-key-12345", cmd_str)
+        self.assertIn('--settings={"modelProvider":"gemini"}', cmd_str)
+
+    def test_no_api_key_allows_oauth(self):
+        import os
+        from unittest.mock import patch
+        with patch.dict(os.environ, {}, clear=True):
+            cmd = build_docker_cmd(
+                recipe=self.recipe,
+                storage_root=self.storage_root,
+                api_key=None,
+            )
+            cmd_str = " ".join(cmd)
+            self.assertNotIn("GEMINI_API_KEY=", cmd_str)
+            self.assertNotIn("GOOGLE_API_KEY=", cmd_str)
+            self.assertNotIn('--settings={"modelProvider":"gemini"}', cmd_str)
 
     def test_container_gemini_volume_mounted(self):
         cmd = build_docker_cmd(

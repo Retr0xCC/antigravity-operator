@@ -2,11 +2,11 @@
 
 # Antigravity Operator
 
-> Автономный Headless-раннер для ИИ-агентов: интеллектуальная организация медиатеки (Plex / Jellyfin), Remux и аппаратное сжатие **AV1** (AMD RDNA 3 / RX 7700 XT) и **HEVC** (AMD VA-API / NVIDIA NVENC) на базе изолированной песочницы Docker Sandboxes (SBX) и Docker Engine.
+> Автономный Headless-раннер для ИИ-агентов: интеллектуальная организация медиатеки (Plex / Jellyfin), Remux и аппаратное сжатие **AV1** (AMD RDNA 3 / RX 7700 XT) и **HEVC** (AMD VA-API / NVIDIA NVENC) в изолированном контейнере Docker Engine.
 
 [![CLI: operate](https://img.shields.io/badge/CLI-operate-blue.svg)](bin/operate)
 [![Base: antigravity-sbx-patched](https://img.shields.io/badge/Base-antigravity--sbx--patched-blueviolet.svg)](https://github.com/Retr0xCC/antigravity-sbx-patched)
-[![Docker: Sandboxes & Engine](https://img.shields.io/badge/Runtime-SBX%20%7C%20Docker-2496ED?logo=docker&logoColor=white)](docker/Dockerfile)
+[![Docker: Engine](https://img.shields.io/badge/Runtime-Docker-2496ED?logo=docker&logoColor=white)](docker/Dockerfile)
 [![GPU: AMD AV1 & NVIDIA NVENC](https://img.shields.io/badge/GPU-AMD%20AV1%20%7C%20NVENC-ED1C24?logo=amd&logoColor=white)](#аппаратное-сжатие-gpu)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Codeberg](https://img.shields.io/badge/Codeberg-Main_Repo-2185D0?logo=codeberg&logoColor=white)](https://codeberg.org/Retr0xCC/antigravity-operator)
@@ -20,7 +20,7 @@
 
 Прямой запуск такого агента на хосте чреват неконтролируемым расходом системных ресурсов (утечки памяти, процессы-зомби, перегрузка CPU) и риском компрометации хостовой системы (домашний каталог пользователя, ключи SSH, системные конфиги).
 
-**Antigravity Operator** решает эту задачу, изолируя автономного агента Antigravity (`agy --dangerously-skip-permissions`) внутри контролируемой песочницы:
+**Antigravity Operator** решает эту задачу, изолируя автономного агента Antigravity (`agy --dangerously-skip-permissions`) внутри контролируемого Docker-контейнера:
 
 * **Изоляция хоста от агента:** Хостовая ОС, системные каталоги, домашняя папка пользователя (`~/.ssh`, `~/.docker`) и Docker socket полностью скрыты от агента. Ресурсы жестко лимитированы (ОЗУ, CPU, лимит PID, Tini-инициализатор против процессов-зомби).
 * **Необходимый компромисс монтирования хранилища:** Для работы Zero-Copy жёстких ссылок (`os.link()`) без ошибки ядра `EXDEV` исходные загрузки (`Downloads`) и медиатека (`Media`) физически обязаны находиться на одном разделе и монтироваться в контейнер общим корнем (`/storage:rw`). Это осознанный архитектурный компромисс: контейнерная изоляция защищает хост, но внутри хранилища безопасность данных опирается на строгий регламент агента и атомарность инструментов.
@@ -30,23 +30,15 @@
   - **Изоляция в RAM-диске (`/tmp`):** Вся рабочая директория агента вынесена в `tmpfs` (RAM-диск 4 ГБ). Агент физически не засоряет хранилище `/storage` временными скриптами.
 * **Строгая неизменяемость раннера (Read-Only):** Код самого оператора, утилиты и регламенты (`recipes/`) монтируются строго в режиме `:ro`. Агент не может переписать собственные инструкции (`INSTRUCTIONS.md`) или логику раннера.
 * **Downstream от `antigravity-sbx-patched`:** Образ оператора строится напрямую поверх `ghcr.io/retr0xcc/antigravity-sbx-patched:latest` с предварительно интегрированным и валидированным QNIX eligibility-патчем, залоченным бинарником `agy` и отключенными фоновыми автообновлениями.
-* **Поддержка Docker Sandboxes (`sbx`) One-Shot:** Нативная поддержка запуска через `sbx run --rm` и декларативные шаблоны `sbxenv-media.yaml` для автономных задач без GPU.
 * **Аппаратное ускорение AMD Radeon (AV1 & HEVC):** Нативная поддержка видеокарт AMD RDNA 3 (включая **Radeon RX 7700 XT**) через стек Mesa VA-API (`av1_vaapi`, `hevc_vaapi`). Аппаратное кодирование в **AV1** обеспечивает дополнительную экономию 20–30% дискового пространства по сравнению с HEVC при сохранении высокого качества.
 * **Поддержка NVIDIA NVENC & Intel QuickSync / VA-API:** Автоматическое определение GPU хоста (`amd`, `nvidia`, `intel` или CPU fallback).
-* **Встроенный движок Muxpress:** Интеграция проверенного конвейера для сопоставления серий, внешних дорожек озвучек (`.mka`), субтитров (`.ass`) и встраивания шрифтов (`-attach`) в единый монолитный контейнер `.mkv` для Jellyfin/Plex.
-* **Обогащение метаданных (IMDb / Cyclopedia / Wikipedia):** Автоматическое семантическое распознавание канонических названий и годов релизов для фильмов, сериалов и аудиокниг.
+* **Встроенный движок Muxpress:** Интеграция конвейера для сопоставления серий, внешних дорожек озвучек (`.mka`), субтитров (`.ass`) и встраивания шрифтов (`-attach`) в единый монолитный контейнер `.mkv` для Jellyfin/Plex.
+* **Канонизация метаданных по умолчанию (IMDb / Cyclopedia / Wikipedia):** Автоматическое семантическое распознавание названий и годов релизов для фильмов, сериалов и аудиокниг.
+* **Сетевая изоляция и офлайн-режим (`--offline`):** Полное отключение сети через `--network=none` для полной изоляции без сетевых запросов.
 
 ---
 
 ## Архитектура и изоляция
-
-> [!IMPORTANT]
-> **Логика выбора рантайма (`--runtime auto`):**
-> * **При задачах со сжатием на GPU (`--compress`, `media-compress`, `media-pipeline`):**
->   Автоматически используется стандартный **Docker Engine** (`--runtime docker`). Это необходимо, так как Docker позволяет прозрачно пробросить символьные устройства хоста (`--device=/dev/dri:/dev/dri` для AMD/Intel с группами `video`/`render` или `--gpus all` для NVIDIA) напрямую в контейнер без оверхеда виртуализации.
-> * **При задачах без GPU (`media-link`, `media-remux` без сжатия):**
->   Автоматически используется **Docker Sandboxes (`sbx`)** (`--runtime sbx` при наличии CLI `sbx` на хосте). Это обеспечивает максимальную изоляцию в microVM, строгий сетевой allowlist, безопасную инъекцию `GEMINI_API_KEY` через proxy-managed credentials и работу в Zero-Copy режиме.
-> * При необходимости вы можете принудительно переопределить рантайм флагами `--runtime docker` или `--runtime sbx`.
 
 ```text
  ┌─────────────────────────────────────────────────────────────┐
@@ -65,20 +57,17 @@
  │   - или NVIDIA GeForce/RTX: --gpus all (CUDA NVENC)         │
  └───────────────────────────────┬─────────────────────────────┘
                                  │
-                 ┌───────────────┴───────────────┐
-                 ▼                               ▼
-    [Runtime: Docker Engine]          [Runtime: Docker Sandboxes]
-    --device=/dev/dri:/dev/dri        sbx run --rm ./kits/media-operator
-    (Прямой доступ к GPU)             (Строгая microVM изоляция)
-                 │                               │
-                 └───────────────┬───────────────┘
                                  ▼
+                     [Контейнер Docker Engine]
+                     --device=/dev/dri:/dev/dri
  ┌─────────────────────────────────────────────────────────────┐
  │               Песочница Antigravity Operator                │
  │               (База: antigravity-sbx-patched)               │
  │                                                             │
  │   - Непривилегированный пользователь: 'agent' (UID 1000)    │
  │   - Защита ядра: --security-opt=no-new-privileges:true      │
+ │   - Отключение сетевого сырого сокета: --cap-drop=NET_RAW   │
+ │   - Сеть: bridge с Dual-DNS (или --network=none в --offline)│
  │   - Быстрый RAM-диск: --tmpfs=/tmp:rw,nosuid,nodev,size=4g  │
  │   - Лимиты ресурсов: memory=8g, cpus=4, pids-limit=4096     │
  │   - Reaper зомби-процессов: --init (Tini PID 1)             │
@@ -106,7 +95,7 @@
 ## Системные требования к хосту
 
 * **Операционная система:** Linux (ядро 5.x/6.x) с поддержкой файловой системы ext4 / btrfs / zfs.
-* **Контейнерный движок:** Docker Engine 20.10+ с Docker CLI и/или Docker Sandboxes (`sbx`).
+* **Контейнерный движок:** Docker Engine 20.10+ с Docker CLI.
 * **Аппаратное ускорение (GPU):**
   * **AMD Radeon:** RX 7000 Series (RDNA 3 / Navi 3x, например Radeon RX 7700 XT) с аппаратным ускорением **AV1** (`av1_vaapi`) и **HEVC** (`hevc_vaapi`) через драйвер Mesa VA-API (`radeonsi`) на `/dev/dri/renderD128`.
   * **NVIDIA:** GeForce GTX 10xx, RTX 20xx/30xx/40xx с установленным драйвером NVIDIA и **NVIDIA Container Toolkit**.
@@ -129,14 +118,15 @@ bin/operate doctor
 ```
 
 Команда автоматически проверит:
-* Наличие Docker Engine и Docker Sandboxes CLI (`sbx`).
+* Наличие Docker Engine.
 * Аппаратный ускоритель GPU (AMD Radeon VA-API, NVIDIA CUDA NVENC, Intel).
 * Наличие аппаратного энкодера **AV1** на видеокартах AMD RDNA 3 / Ada Lovelace.
-* Наличие VA-API утилит (`vainfo`) и рецептов.
+* Наличие VA-API утилит (`vainfo`), FFmpeg и каталога рецептов.
+* Статус локального образа оператора `antigravity-operator:latest`.
 
 ### 2. Сборка Docker-образа
 
-Сборка происходит downstream от готового образа `antigravity-sbx-patched`:
+Сборка происходит downstream от готового образа `ghcr.io/retr0xcc/antigravity-sbx-patched:latest`:
 
 ```bash
 bin/operate build
@@ -165,11 +155,13 @@ bin/operate list
 
 ### Сценарий 1. Быстрый перенос из `Downloads` в `Media` (`media-link`)
 
-Мгновенное добавление фильма или сериала в медиатеку с поиском на IMDb и сохранением торрент-раздачи (Zero-Copy):
+Мгновенное добавление фильма или сериала в медиатеку с автоматическим поиском на IMDb и сохранением торрент-раздачи (Zero-Copy):
 
 ```bash
-bin/operate run media-link /home/retro/HDD-EXT4/Downloads/The.Matrix.1999 /home/retro/HDD-EXT4/Media/Movies --imdb
+bin/operate run media-link /home/retro/HDD-EXT4/Downloads/The.Matrix.1999 /home/retro/HDD-EXT4/Media/Movies
 ```
+
+*(Поиск на IMDb / Wikipedia включен по умолчанию)*.
 
 ### Сценарий 2. Сборка дорожек и шрифтов в единый MKV (`media-remux`)
 
@@ -190,23 +182,16 @@ bin/operate run media-compress /home/retro/HDD-EXT4/Media/TV/Frieren --codec av1
 * **Защита Rollback:** Если сжатый файл оказался больше исходного, временный файл удаляется и оригинал сохраняется.
 * **Принудительное сжатие (`--force`):** Перекодирование даже файлов, которые уже сжаты, если их исходный битрейт избыточен (тяжёлые BDRip).
 
-### Сценарий 4. Запуск через Docker Sandboxes (`sbx`) One-Shot
+### Сценарий 4. Полностью изолированный запуск без сети (`--offline`)
 
-Для запуска в изолированной песочнице Docker Sandboxes microVM:
-
-```bash
-bin/operate run media-link /home/retro/HDD-EXT4/Downloads/Series /home/retro/HDD-EXT4/Media/TV --runtime sbx
-```
-
-Или прямой вызов через `sbx run`:
+Запуск контейнера в изолированном режиме с флагом `--network=none`:
 
 ```bash
-sbx run --rm ./kits/media-operator /home/retro/HDD-EXT4 -- \
-  --dangerously-skip-permissions \
-  --effort low \
-  --output-format stream-json \
-  -p "Организуй медиатеку в папке /storage/Media по правилам media-link"
+bin/operate run media-link /home/retro/HDD-EXT4/Downloads/Series /home/retro/HDD-EXT4/Media/TV --offline
 ```
+
+* Контейнер выполняется с параметром `--network=none` (полное отсутствие доступа к сети и хосту).
+* Канонизация названий происходит офлайн на основе локального анализа токенов и регулярных выражений.
 
 ---
 
@@ -221,18 +206,17 @@ operate run <recipe> <source> [destination] [опции]
 | `recipe` | — | Имя рецепта (`media-pipeline`, `media-link`, `media-remux`, `media-compress`) |
 | `source` | — | Путь к исходной папке в `Downloads` или `Media` |
 | `destination` / `-d` | Автовыбор | Целевая папка медиатеки (`TV`, `Movies`, `Books`) |
-| `--runtime` | `auto` | Движок изоляции: `auto` (выбирает лучший), `docker` (прямой GPU), `sbx` (микро-ВМ) |
+| `--mode` | `link` | Режим работы: `link`, `remux`, `compress`, `full` |
 | `--codec` | `auto` | Целевой видеокодек: `auto` (AV1 для RDNA 3/Ada, HEVC для старых), `av1`, `hevc`, `h264` |
 | `--backend` | `auto` | Бэкенд энкодера: `auto` (AMD/Intel `vaapi`, NVIDIA `nvenc`, CPU `software`) |
 | `--device` | Автовыбор | Путь к DRI render-ноде (например `/dev/dri/renderD128`) |
 | `-q`, `--quality`, `--qp` | `28` | Параметр качества (CQP global_quality для VA-API, QP для NVENC, CRF для CPU) |
 | `--preset` | `p6` | Пресет скорости/качества кодирования |
-| `--mode` | `link` | Режим работы: `link`, `remux`, `compress`, `full` |
 | `--remux` | `false` | Упаковать внешние дорожки/сабы/шрифты в единый `.mkv` |
 | `--compress` | `false` | Включить аппаратное сжатие GPU |
 | `--force`, `--force-reencode` | `false` | Принудительно сжать даже если видео уже в целевом кодеке |
 | `--max-bitrate` | — | Порог битрейта в kbps (например `4500`): сжимать файлы, превышающие данный порог |
-| `--imdb`, `--metadata`| `false` | Разрешить сеть и запросить метаданные (IMDb/Wiki/Cyclopedia) |
+| `--offline`, `--no-network` | `false` | Полностью отключить сеть (`--network=none`, офлайн-парсинг) |
 | `--dry-run` | `false` | Симуляция: вывод плана и команд без изменения диска |
 | `--auto` | `false` | Запуск в автономном режиме без запроса подтверждений |
 
@@ -241,4 +225,4 @@ operate run <recipe> <source> [destination] [опции]
 ## Лицензия и отказ от ответственности
 
 * Исходный код этого проекта распространяется под лицензией **[MIT](LICENSE)** (© 2026 Retr0xCC).
-* **Disclaimer**: это независимый проект сообщества. Он не связан, не спонсируется и не одобрен компаниями Google LLC или Docker, Inc. «Google Antigravity» является товарным знаком Google LLC. «Docker» и «Docker Sandboxes» являются товарными знаками Docker, Inc.
+* **Disclaimer**: это независимый проект сообщества. Он не связан, не спонсируется и не одобрен компаниями Google LLC или Docker, Inc. «Google Antigravity» является товарным знаком Google LLC. «Docker» является товарным знаком Docker, Inc.

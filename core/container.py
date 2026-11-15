@@ -1,8 +1,8 @@
-"""Container and SBX command generator and runtime options builder.
+"""Container command generator and runtime options builder.
 
-Constructs safe, headless executions adhering to Docker Sandboxes and
-antigravity-sandbox hardening principles with multi-backend hardware compression
-(AMD Radeon RX 7000 AV1 / HEVC via VA-API, NVIDIA NVENC, CPU) and metadata resolution.
+Constructs safe, headless executions adhering to antigravity-sandbox hardening principles
+with multi-backend hardware compression (AMD Radeon RX 7000 AV1 / HEVC via VA-API,
+NVIDIA NVENC, CPU) and metadata resolution.
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ from core.gpu import GPUInfo, detect_gpu
 
 
 IMAGE_NAME = "antigravity-operator:latest"
-SBX_KIT_PATH = Path(__file__).resolve().parent.parent / "kits" / "media-operator"
 DNS_PRIMARY = "9.9.9.9"
 DNS_SECONDARY = "149.112.112.112"
 
@@ -180,98 +179,6 @@ def build_agent_prompt(
     )
 
 
-def build_sbx_cmd(
-    recipe: RecipeConfig,
-    storage_root: Path,
-    source_subpath: str = "",
-    dest_subpath: str | None = None,
-    mode: str = "link",
-    compress: bool = False,
-    remux: bool = False,
-    enable_metadata: bool = False,
-    dry_run: bool = False,
-    auto: bool = False,
-    quality: int = 28,
-    preset: str = "p6",
-    codec: str = "av1",
-    backend: str = "vaapi",
-    gpu_info: GPUInfo | None = None,
-    force_hevc: bool = False,
-    max_bitrate: int | None = None,
-    stream: bool = True,
-    interactive_tui: bool = False,
-    extra_sbx_args: Sequence[str] = (),
-    detected_title: str | None = None,
-    detected_year: str | None = None,
-    detected_author: str | None = None,
-    category: str | None = None,
-) -> list[str]:
-    """Build the 'sbx run' command for Docker Sandboxes execution."""
-    gpu = gpu_info or detect_gpu()
-    kit_target = str(SBX_KIT_PATH) if SBX_KIT_PATH.is_dir() else "ghcr.io/retr0xcc/antigravity-operator-kit:latest"
-
-    cmd: list[str] = ["sbx", "run", "--rm"]
-    cmd.extend(extra_sbx_args)
-    cmd.extend([kit_target, str(storage_root.resolve()), "--"])
-
-    # Determine reasoning effort
-    effective_mode = mode
-    is_compression_active = compress or mode in ("compress", "full") or recipe.gpu_default
-    if is_compression_active and effective_mode == "link":
-        effective_mode = "full" if remux else "compress"
-    elif remux and effective_mode == "link":
-        effective_mode = "remux"
-
-    effort_level = "low" if effective_mode == "link" else ("medium" if effective_mode == "remux" else "high")
-
-    agent_prompt = build_agent_prompt(
-        recipe_name=recipe.name,
-        source_subpath=source_subpath,
-        dest_subpath=dest_subpath,
-        mode=mode,
-        compress=is_compression_active,
-        remux=remux,
-        enable_metadata=enable_metadata,
-        dry_run=dry_run,
-        auto=auto,
-        quality=quality,
-        preset=preset,
-        codec=codec,
-        backend=backend,
-        gpu_name=gpu.name,
-        force_hevc=force_hevc,
-        max_bitrate=max_bitrate,
-        detected_title=detected_title,
-        detected_year=detected_year,
-        detected_author=detected_author,
-        category=category,
-    )
-
-    if interactive_tui:
-        cmd.extend([
-            "--dangerously-skip-permissions",
-            "--effort", effort_level,
-            f"-i={agent_prompt}",
-        ])
-    elif stream:
-        cmd.extend([
-            "--dangerously-skip-permissions",
-            "--effort", effort_level,
-            "--output-format", "stream-json",
-            "--print-timeout=0",
-            f"-p={agent_prompt}",
-        ])
-    else:
-        cmd.extend([
-            "--dangerously-skip-permissions",
-            "--effort", effort_level,
-            "--print-timeout=0",
-            f"--print={agent_prompt}",
-        ])
-
-    return cmd
-
-
 def build_docker_cmd(
     recipe: RecipeConfig,
     storage_root: Path,
@@ -280,7 +187,8 @@ def build_docker_cmd(
     mode: str = "link",
     compress: bool = False,
     remux: bool = False,
-    enable_metadata: bool = False,
+    enable_metadata: bool = True,
+    offline: bool = False,
     dry_run: bool = False,
     auto: bool = False,
     quality: int = 28,
@@ -329,13 +237,16 @@ def build_docker_cmd(
     if "cpus" in res:
         cmd.append(f"--cpus={res['cpus']}")
 
-    # Network & External Dual-DNS
-    net_name = detect_docker_network()
-    cmd.extend([
-        f"--network={net_name}",
-        f"--dns={DNS_PRIMARY}",
-        f"--dns={DNS_SECONDARY}",
-    ])
+    # Network & DNS configuration
+    if offline:
+        cmd.append("--network=none")
+    else:
+        net_name = detect_docker_network()
+        cmd.extend([
+            f"--network={net_name}",
+            f"--dns={DNS_PRIMARY}",
+            f"--dns={DNS_SECONDARY}",
+        ])
 
     # Hardware acceleration passthrough (AMD VA-API / NVIDIA NVENC / Intel)
     is_compression_active = compress or mode in ("compress", "full") or recipe.gpu_default
@@ -381,6 +292,7 @@ def build_docker_cmd(
         "-e", f"OPERATE_MAX_BITRATE={str(max_bitrate or '')}",
         "-e", f"OPERATE_REMUX={'1' if (remux or mode in ('remux', 'full')) else '0'}",
         "-e", f"OPERATE_METADATA={'1' if enable_metadata else '0'}",
+        "-e", f"OPERATE_OFFLINE={'1' if offline else '0'}",
         "-e", f"OPERATE_AUTO={'1' if auto else '0'}",
         "-e", f"OPERATE_SOURCE_SUBPATH={source_subpath}",
         "-e", f"OPERATE_DEST_SUBPATH={dest_subpath or ''}",

@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from core.config import list_recipes, load_recipe, RecipeError
-from core.container import build_docker_cmd, build_sbx_cmd, IMAGE_NAME, SBX_KIT_PATH
+from core.container import build_docker_cmd, IMAGE_NAME
 from core.gpu import detect_gpu
 from core.metadata import clean_title_tokens, search_imdb, search_cyclopedia_book
 from core.runner import execute_container
@@ -93,19 +93,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     quality = getattr(args, "quality", None) or getattr(args, "qp", 28)
     device_path = args.device or gpu.device_path
 
-    # Determine runtime engine: 'auto', 'sbx', or 'docker'
-    sbx_available = shutil.which("sbx") is not None and SBX_KIT_PATH.is_dir()
-    if args.runtime == "auto":
-        # If GPU compression is required on AMD/NVIDIA, use direct Docker with DRI/CUDA passthrough
-        if compress_active and gpu.is_hardware:
-            runtime = "docker"
-        elif sbx_available:
-            runtime = "sbx"
-        else:
-            runtime = "docker"
-    else:
-        runtime = args.runtime
-
     # Determine effective mode (inherit from recipe if specific)
     mode = args.mode
     if recipe.name == "media-link":
@@ -123,7 +110,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             mode = "remux"
 
     # Metadata resolution preview (IMDb / Wikipedia / Cyclopedia)
-    metadata_enabled = bool(args.imdb)
+    is_offline = bool(getattr(args, "offline", False))
+    metadata_enabled = not is_offline
     detected_title = None
     detected_year = None
     detected_author = None
@@ -146,7 +134,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     is_in_place_media = "Media" in src_subpath
 
     print(f"==> Launching Antigravity Operator [{recipe.name}]")
-    print(f"    Runtime Engine: {runtime.upper()} ({'Docker Sandboxes microVM' if runtime == 'sbx' else 'Direct Docker Container'})")
+    print(f"    Runtime Engine: Docker Container")
     print(f"    Storage Root:   {storage_root} (mounted to /storage:rw)")
     print(f"    Source Target:  /storage/{src_subpath}" if src_subpath else "    Source Target:  /storage/Downloads")
     if dest_subpath:
@@ -172,11 +160,14 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"    Force Re-encode:YES (Re-encode unconditionally)")
     if max_bitrate:
         print(f"    Max Bitrate:    {max_bitrate} kbps threshold")
-    print(f"    Metadata Search:{'Enabled (IMDb / Wiki / Cyclopedia)' if metadata_enabled else 'Offline regex'}")
+    print(f"    Metadata Search:{'Enabled (IMDb / Wiki / Cyclopedia)' if metadata_enabled else 'Offline (regex cleaning only)'}")
 
-    from core.container import detect_docker_network, DNS_PRIMARY, DNS_SECONDARY
-    net_name = detect_docker_network()
-    print(f"    Network:        {net_name} (LAN isolated, Dual-DNS: {DNS_PRIMARY}, {DNS_SECONDARY})")
+    if is_offline:
+        print("    Network:        none (Airgapped / Isolated, no external or LAN access)")
+    else:
+        from core.container import detect_docker_network, DNS_PRIMARY, DNS_SECONDARY
+        net_name = detect_docker_network()
+        print(f"    Network:        {net_name} (Dual-DNS: {DNS_PRIMARY}, {DNS_SECONDARY})")
     print(f"    Dry Run:        {'YES (simulation only)' if args.dry_run else 'NO (live execution)'}")
     print(f"    Unattended:     {'YES' if args.auto else 'NO'}")
     print("=" * 78)
@@ -184,73 +175,49 @@ def cmd_run(args: argparse.Namespace) -> int:
     use_interactive_tui = bool(getattr(args, "interactive", False))
     use_stream = not bool(getattr(args, "no_stream", False)) and not use_interactive_tui
 
-    if runtime == "sbx":
-        cmd = build_sbx_cmd(
-            recipe=recipe,
-            storage_root=storage_root,
-            source_subpath=src_subpath,
-            dest_subpath=dest_subpath,
-            mode=mode,
-            compress=compress_active,
-            remux=args.remux,
-            enable_metadata=metadata_enabled,
-            dry_run=args.dry_run,
-            auto=args.auto,
-            quality=quality,
-            preset=args.preset,
-            codec=codec,
-            backend=backend,
-            gpu_info=gpu,
-            force_hevc=force_reencode,
-            max_bitrate=max_bitrate,
-            stream=use_stream,
-            interactive_tui=use_interactive_tui,
-            detected_title=detected_title,
-            detected_year=detected_year,
-            detected_author=detected_author,
-            category=cat,
-        )
-    else:
-        cmd = build_docker_cmd(
-            recipe=recipe,
-            storage_root=storage_root,
-            source_subpath=src_subpath,
-            dest_subpath=dest_subpath,
-            mode=mode,
-            compress=compress_active,
-            remux=args.remux,
-            enable_metadata=metadata_enabled,
-            dry_run=args.dry_run,
-            auto=args.auto,
-            quality=quality,
-            preset=args.preset,
-            codec=codec,
-            backend=backend,
-            gpu_info=gpu,
-            device_path=device_path,
-            force_hevc=force_reencode,
-            max_bitrate=max_bitrate,
-            stream=use_stream,
-            interactive_tui=use_interactive_tui,
-            detected_title=detected_title,
-            detected_year=detected_year,
-            detected_author=detected_author,
-            category=cat,
-        )
+    cmd = build_docker_cmd(
+        recipe=recipe,
+        storage_root=storage_root,
+        source_subpath=src_subpath,
+        dest_subpath=dest_subpath,
+        mode=mode,
+        compress=compress_active,
+        remux=args.remux,
+        enable_metadata=metadata_enabled,
+        offline=is_offline,
+        dry_run=args.dry_run,
+        auto=args.auto,
+        quality=quality,
+        preset=args.preset,
+        codec=codec,
+        backend=backend,
+        gpu_info=gpu,
+        device_path=device_path,
+        force_hevc=force_reencode,
+        max_bitrate=max_bitrate,
+        stream=use_stream,
+        interactive_tui=use_interactive_tui,
+        detected_title=detected_title,
+        detected_year=detected_year,
+        detected_author=detected_author,
+        category=cat,
+    )
+
+    image_ready = check_image_exists(IMAGE_NAME)
 
     if args.dry_run:
-        print(f"\n[DRY RUN] Generated {runtime.upper()} execution command:")
+        print("\n[DRY RUN] Generated Docker execution command:")
         escaped_cmd = [shlex.quote(c) for c in cmd]
         print(" \\\n    ".join(escaped_cmd))
         print("\n[DRY RUN] In live execution, the agent will execute inside the sandbox with OPERATE_DRY_RUN=1.")
 
-        if runtime == "docker" and not check_image_exists(IMAGE_NAME):
+        if not image_ready:
             print(f"\n[DRY RUN] Note: Image '{IMAGE_NAME}' is not yet built locally on this host.")
             print("[DRY RUN] Run 'bin/operate build' to compile the container image.")
         return 0
 
-    if runtime == "docker" and not check_image_exists(IMAGE_NAME):
-        print(f"\nError: Docker image '{IMAGE_NAME}' not found locally.", file=sys.stderr)
+    if not image_ready:
+        print(f"\nError: Container image '{IMAGE_NAME}' not found locally.", file=sys.stderr)
         print("Please build the image first by running:", file=sys.stderr)
         print("    bin/operate build\n", file=sys.stderr)
         return 1
@@ -259,7 +226,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_build(args: argparse.Namespace) -> int:
-    """Build or rebuild the operator Docker image downstream from antigravity-sbx-patched."""
+    """Build the operator Docker image downstream from antigravity-sbx-patched."""
     if not DOCKERFILE_PATH.is_file():
         print(f"Error: Dockerfile not found at {DOCKERFILE_PATH}", file=sys.stderr)
         return 1
@@ -295,7 +262,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print("==> Checking Antigravity Operator Host Environment...")
     all_ok = True
 
-    # 1. Container & Sandboxing Check (Docker Engine & SBX CLI)
+    # 1. Container Engine Check (Docker)
     docker_bin = shutil.which("docker")
     if docker_bin:
         try:
@@ -307,16 +274,6 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     else:
         print("  [✗] Docker Engine: NOT FOUND. Please install Docker.")
         all_ok = False
-
-    sbx_bin = shutil.which("sbx")
-    if sbx_bin:
-        try:
-            v = subprocess.check_output([sbx_bin, "version"], text=True, stderr=subprocess.DEVNULL).strip()
-            print(f"  [✓] Docker Sandboxes CLI (sbx): {v}")
-        except Exception:
-            print(f"  [✓] Docker Sandboxes CLI (sbx): installed at {sbx_bin}")
-    else:
-        print("  [-] Docker Sandboxes CLI (sbx): not found (fallback to direct Docker Engine).")
 
     # 2. Hardware and GPU Acceleration Check
     gpu = detect_gpu()
@@ -347,6 +304,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"  [✗] Recipes Directory: missing {RECIPES_DIR}")
         all_ok = False
 
+    # 5. Operator Container Image Check
+    image_ready = check_image_exists(IMAGE_NAME)
+    if image_ready:
+        print(f"  [✓] Operator Image: {IMAGE_NAME} (built & ready)")
+    else:
+        print(f"  [-] Operator Image: '{IMAGE_NAME}' not built yet (run 'bin/operate build')")
+
     if all_ok:
         print("\nAll core host checks passed! You are ready to run `operate`.")
         return 0
@@ -372,12 +336,6 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("source", help="Source folder in Downloads or Media (e.g. /storage/Downloads/Series).")
     p_run.add_argument("destination", nargs="?", default=None, help="Optional destination folder (e.g. /storage/Media/TV).")
     p_run.add_argument("-d", "--dest", default=None, help="Destination folder (alternative flag).")
-    p_run.add_argument(
-        "--runtime",
-        choices=["auto", "docker", "sbx"],
-        default="auto",
-        help="Execution runtime: 'auto' (intelligent selection based on GPU/recipe), 'docker' (direct container), 'sbx' (Docker Sandboxes microVM).",
-    )
     p_run.add_argument(
         "--mode",
         choices=["link", "remux", "compress", "full"],
@@ -424,10 +382,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Re-encode if video bitrate exceeds this threshold in kbps (e.g. 4500).",
     )
     p_run.add_argument(
-        "--imdb", "--metadata",
-        dest="imdb",
+        "--offline", "--no-network",
+        dest="offline",
         action="store_true",
-        help="Enable online canonical metadata search (IMDb for movies/shows, Cyclopedia/Wikipedia for books).",
+        help="Disable network access entirely (runs container with --network=none and uses offline regex for metadata).",
     )
     p_run.add_argument(
         "-q", "--quality", "--qp",

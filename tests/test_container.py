@@ -52,6 +52,19 @@ class TestContainer(unittest.TestCase):
         self.assertIn("OPERATE_OFFLINE=1", cmd_str)
         self.assertIn("OPERATE_METADATA=0", cmd_str)
 
+    def test_proxy_flags_injection(self):
+        cmd = build_docker_cmd(
+            recipe=self.recipe,
+            storage_root=self.storage_root,
+            offline=False,
+            proxy_port=38421,
+            enable_metadata=True,
+        )
+        cmd_str = " ".join(cmd)
+        self.assertIn("--add-host=host.docker.internal:host-gateway", cmd_str)
+        self.assertIn("HTTP_PROXY=http://host.docker.internal:38421", cmd_str)
+        self.assertIn("HTTPS_PROXY=http://host.docker.internal:38421", cmd_str)
+
 
 if __name__ == "__main__":
     unittest.main()

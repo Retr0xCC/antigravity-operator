@@ -14,6 +14,7 @@ from core.config import list_recipes, load_recipe, RecipeError
 from core.container import build_docker_cmd, IMAGE_NAME
 from core.gpu import detect_gpu
 from core.metadata import clean_title_tokens, search_imdb, search_cyclopedia_book
+from core.proxy import EphemeralAllowlistProxy
 from core.runner import execute_container
 from core.security import resolve_storage_boundaries, SecurityError
 
@@ -111,6 +112,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     # Metadata resolution preview (IMDb / Wikipedia / Cyclopedia)
     is_offline = bool(getattr(args, "offline", False))
+    use_proxy = not is_offline and not bool(getattr(args, "no_proxy", False))
     metadata_enabled = not is_offline
     detected_title = None
     detected_year = None
@@ -132,6 +134,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         detected_year = clean_y
 
     is_in_place_media = "Media" in src_subpath
+
+    # Start ephemeral in-memory proxy for strict domain allowlist and LAN/SSRF protection
+    proxy = None
+    proxy_port = None
+    if use_proxy:
+        proxy = EphemeralAllowlistProxy(bind_host="0.0.0.0")
+        proxy_port = proxy.start()
 
     print(f"==> Launching Antigravity Operator [{recipe.name}]")
     print(f"    Runtime Engine: Docker Container")
@@ -164,10 +173,14 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     if is_offline:
         print("    Network:        none (Airgapped / Isolated, no external or LAN access)")
+    elif use_proxy:
+        from core.container import detect_docker_network
+        net_name = detect_docker_network()
+        print(f"    Network:        {net_name} (Egress Allowlist Proxy on :{proxy_port}, LAN Isolated)")
     else:
         from core.container import detect_docker_network, DNS_PRIMARY, DNS_SECONDARY
         net_name = detect_docker_network()
-        print(f"    Network:        {net_name} (Dual-DNS: {DNS_PRIMARY}, {DNS_SECONDARY})")
+        print(f"    Network:        {net_name} (Direct unproxied, Dual-DNS: {DNS_PRIMARY}, {DNS_SECONDARY})")
     print(f"    Dry Run:        {'YES (simulation only)' if args.dry_run else 'NO (live execution)'}")
     print(f"    Unattended:     {'YES' if args.auto else 'NO'}")
     print("=" * 78)
@@ -175,54 +188,59 @@ def cmd_run(args: argparse.Namespace) -> int:
     use_interactive_tui = bool(getattr(args, "interactive", False))
     use_stream = not bool(getattr(args, "no_stream", False)) and not use_interactive_tui
 
-    cmd = build_docker_cmd(
-        recipe=recipe,
-        storage_root=storage_root,
-        source_subpath=src_subpath,
-        dest_subpath=dest_subpath,
-        mode=mode,
-        compress=compress_active,
-        remux=args.remux,
-        enable_metadata=metadata_enabled,
-        offline=is_offline,
-        dry_run=args.dry_run,
-        auto=args.auto,
-        quality=quality,
-        preset=args.preset,
-        codec=codec,
-        backend=backend,
-        gpu_info=gpu,
-        device_path=device_path,
-        force_hevc=force_reencode,
-        max_bitrate=max_bitrate,
-        stream=use_stream,
-        interactive_tui=use_interactive_tui,
-        detected_title=detected_title,
-        detected_year=detected_year,
-        detected_author=detected_author,
-        category=cat,
-    )
+    try:
+        cmd = build_docker_cmd(
+            recipe=recipe,
+            storage_root=storage_root,
+            source_subpath=src_subpath,
+            dest_subpath=dest_subpath,
+            mode=mode,
+            compress=compress_active,
+            remux=args.remux,
+            enable_metadata=metadata_enabled,
+            offline=is_offline,
+            proxy_port=proxy_port,
+            dry_run=args.dry_run,
+            auto=args.auto,
+            quality=quality,
+            preset=args.preset,
+            codec=codec,
+            backend=backend,
+            gpu_info=gpu,
+            device_path=device_path,
+            force_hevc=force_reencode,
+            max_bitrate=max_bitrate,
+            stream=use_stream,
+            interactive_tui=use_interactive_tui,
+            detected_title=detected_title,
+            detected_year=detected_year,
+            detected_author=detected_author,
+            category=cat,
+        )
 
-    image_ready = check_image_exists(IMAGE_NAME)
+        image_ready = check_image_exists(IMAGE_NAME)
 
-    if args.dry_run:
-        print("\n[DRY RUN] Generated Docker execution command:")
-        escaped_cmd = [shlex.quote(c) for c in cmd]
-        print(" \\\n    ".join(escaped_cmd))
-        print("\n[DRY RUN] In live execution, the agent will execute inside the sandbox with OPERATE_DRY_RUN=1.")
+        if args.dry_run:
+            print("\n[DRY RUN] Generated Docker execution command:")
+            escaped_cmd = [shlex.quote(c) for c in cmd]
+            print(" \\\n    ".join(escaped_cmd))
+            print("\n[DRY RUN] In live execution, the agent will execute inside the sandbox with OPERATE_DRY_RUN=1.")
+
+            if not image_ready:
+                print(f"\n[DRY RUN] Note: Image '{IMAGE_NAME}' is not yet built locally on this host.")
+                print("[DRY RUN] Run 'bin/operate build' to compile the container image.")
+            return 0
 
         if not image_ready:
-            print(f"\n[DRY RUN] Note: Image '{IMAGE_NAME}' is not yet built locally on this host.")
-            print("[DRY RUN] Run 'bin/operate build' to compile the container image.")
-        return 0
+            print(f"\nError: Container image '{IMAGE_NAME}' not found locally.", file=sys.stderr)
+            print("Please build the image first by running:", file=sys.stderr)
+            print("    bin/operate build\n", file=sys.stderr)
+            return 1
 
-    if not image_ready:
-        print(f"\nError: Container image '{IMAGE_NAME}' not found locally.", file=sys.stderr)
-        print("Please build the image first by running:", file=sys.stderr)
-        print("    bin/operate build\n", file=sys.stderr)
-        return 1
-
-    return execute_container(cmd, stream=use_stream)
+        return execute_container(cmd, stream=use_stream)
+    finally:
+        if proxy:
+            proxy.stop()
 
 
 def cmd_build(args: argparse.Namespace) -> int:
@@ -386,6 +404,12 @@ def main(argv: list[str] | None = None) -> int:
         dest="offline",
         action="store_true",
         help="Disable network access entirely (runs container with --network=none and uses offline regex for metadata).",
+    )
+    p_run.add_argument(
+        "--no-proxy",
+        dest="no_proxy",
+        action="store_true",
+        help="Bypass the ephemeral allowlist proxy and allow direct unconstrained network access.",
     )
     p_run.add_argument(
         "-q", "--quality", "--qp",

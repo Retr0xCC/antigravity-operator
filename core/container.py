@@ -189,6 +189,7 @@ def build_docker_cmd(
     remux: bool = False,
     enable_metadata: bool = True,
     offline: bool = False,
+    proxy_port: int | None = None,
     dry_run: bool = False,
     auto: bool = False,
     quality: int = 28,
@@ -247,6 +248,18 @@ def build_docker_cmd(
             f"--dns={DNS_PRIMARY}",
             f"--dns={DNS_SECONDARY}",
         ])
+        if proxy_port:
+            cmd.extend([
+                "--add-host=host.docker.internal:host-gateway",
+                "-e", f"HTTP_PROXY=http://host.docker.internal:{proxy_port}",
+                "-e", f"HTTPS_PROXY=http://host.docker.internal:{proxy_port}",
+                "-e", f"http_proxy=http://host.docker.internal:{proxy_port}",
+                "-e", f"https_proxy=http://host.docker.internal:{proxy_port}",
+                "-e", f"ALL_PROXY=http://host.docker.internal:{proxy_port}",
+                "-e", f"all_proxy=http://host.docker.internal:{proxy_port}",
+                "-e", "NO_PROXY=localhost,127.0.0.1",
+                "-e", "no_proxy=localhost,127.0.0.1",
+            ])
 
     # Hardware acceleration passthrough (AMD VA-API / NVIDIA NVENC / Intel)
     is_compression_active = compress or mode in ("compress", "full") or recipe.gpu_default

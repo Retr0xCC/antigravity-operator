@@ -34,7 +34,8 @@ Running such an unconstrained agent directly on the host poses critical risks of
 * **Support for NVIDIA NVENC & Intel QuickSync / VA-API:** Automatic host GPU detection (`amd`, `nvidia`, `intel`, or CPU software fallback).
 * **Integrated Muxpress Engine:** Proven pipeline for episode matching, companion audio track mapping (`.mka`), subtitle styling (`.ass`), and font attachment (`-attach`) into unified monolithic `.mkv` containers for Jellyfin/Plex.
 * **Canonical Metadata Enrichment by Default:** Automatic semantic recognition of canonical titles and release years for movies, series, anime, and audiobooks (TMDb, IMDb, TheTVDB, Wikipedia, OpenLibrary).
-* **Network Isolation and Airgapped Mode (`--offline`):** Complete network shutdown via `--network=none` for strict, isolated offline runs.
+* **Built-in Ephemeral Egress Proxy (Allowlist + LAN/SSRF Protection):** Automatically starts an in-memory forward proxy on a dynamic host port. Whitelists only Google Gemini API and metadata providers (IMDb/TMDb/Wikipedia). All requests to the local home network (RFC 1918: 192.168.x.x, 10.x.x.x, 127.x.x.x) and untrusted internet destinations are rejected (403 Forbidden). Requires zero root/iptables rights and leaves no system traces.
+* **Network Isolation and Airgapped Mode (`--offline`):** Complete network shutdown via `--network=none` for deterministic runs.
 
 ---
 
@@ -217,6 +218,7 @@ operate run <recipe> <source> [destination] [options]
 | `--force`, `--force-reencode` | `false` | Force re-encoding even if stream is already in target codec |
 | `--max-bitrate` | — | Bitrate threshold in kbps (e.g. `4500`): re-encode files exceeding this value |
 | `--offline`, `--no-network` | `false` | Completely disable network (`--network=none`, offline regex parsing) |
+| `--no-proxy` | `false` | Bypass the ephemeral allowlist proxy and allow direct unconstrained network access |
 | `--dry-run` | `false` | Dry-run simulation: print plan without modifying filesystem |
 | `--auto` | `false` | Unattended automated execution without prompts |
 

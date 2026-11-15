@@ -275,6 +275,7 @@ def build_docker_cmd(
     detected_author: str | None = None,
     category: str | None = None,
     image_name: str | None = None,
+    api_key: str | None = None,
 ) -> list[str]:
     """Build the complete 'docker run' argument list."""
     gpu = gpu_info or detect_gpu()
@@ -356,11 +357,21 @@ def build_docker_cmd(
     ])
 
     # 3. Mount persistent Gemini auth and tool cache volumes
-    # Support both /home/agent (downstream sbx base) and /home/operator
+    # Preserve host's ~/.gemini (OAuth tokens and CLI configs) or create it if missing
+    host_gemini = Path.home() / ".gemini"
+    host_gemini.mkdir(parents=True, exist_ok=True)
     cmd.extend([
-        "-v", "agy-operator-config:/home/agent/.gemini",
+        "-v", f"{host_gemini.resolve()}:/home/agent/.gemini",
         "-v", "agy-operator-cache:/home/agent/.cache",
     ])
+
+    # Pass Gemini / Google API Key if provided or available in host environment
+    effective_api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if effective_api_key:
+        cmd.extend([
+            "-e", f"GEMINI_API_KEY={effective_api_key}",
+            "-e", f"GOOGLE_API_KEY={effective_api_key}",
+        ])
 
     # Pass environment variables for scripts inside container
     dev_path = device_path or gpu.device_path or "/dev/dri/renderD128"

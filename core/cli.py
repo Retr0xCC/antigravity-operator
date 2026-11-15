@@ -48,6 +48,19 @@ def get_effective_image_name() -> str:
     return REMOTE_IMAGE_NAME
 
 
+def check_auth_available(api_key: str | None = None) -> tuple[bool, str]:
+    """Check whether Gemini authentication (OAuth token or API key) is available on the host."""
+    eff_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if eff_key:
+        return True, "API Key (GEMINI_API_KEY / GOOGLE_API_KEY)"
+
+    token_file = Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+    if token_file.is_file() and token_file.stat().st_size > 0:
+        return True, f"OAuth Token (~/.gemini/.../antigravity-oauth-token)"
+
+    return False, "None"
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     """List available recipes."""
     recipes = list_recipes(RECIPES_DIR)
@@ -143,6 +156,20 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     is_in_place_media = "Media" in src_subpath
 
+    # Verify authentication credentials (unless running strictly offline)
+    cli_api_key = getattr(args, "api_key", None)
+    has_auth, auth_type = check_auth_available(cli_api_key)
+    if not has_auth and not is_offline:
+        print("\n[-] Error: Google Antigravity authentication required.", file=sys.stderr)
+        print("    No active OAuth credentials or GEMINI_API_KEY found on this host.\n", file=sys.stderr)
+        print("    To authenticate, please do one of the following:", file=sys.stderr)
+        print("    1. Sign in interactively with your Google account:", file=sys.stderr)
+        print("       bin/operate login\n", file=sys.stderr)
+        print("    2. Or provide a Gemini API key:", file=sys.stderr)
+        print("       export GEMINI_API_KEY=\"your-gemini-api-key\"", file=sys.stderr)
+        print("       (or pass: bin/operate run ... --api-key=\"your-api-key\")\n", file=sys.stderr)
+        return 1
+
     # Start local allowlist proxy for domain filtering and LAN protection
     proxy = None
     proxy_port = None
@@ -152,7 +179,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     print(f"==> Launching Antigravity Operator [{recipe.name}]")
     print(f"    Runtime Engine: Docker Container")
-    print(f"    Storage Root:   {storage_root} (mounted to /storage:rw)")
+    print(f"    Storage Root:   {storage_root} (mounted to /storage:{'ro' if args.dry_run else 'rw'})")
     print(f"    Source Target:  /storage/{src_subpath}" if src_subpath else "    Source Target:  /storage/Downloads")
     if dest_subpath:
         print(f"    Dest Target:    /storage/{dest_subpath}")
@@ -163,6 +190,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     print(f"    Pipeline Mode:  {mode.upper()} (remux: {args.remux}, compress: {compress_active})")
     print(f"    Hardlink Mode:  Shared ext4 partition (EXDEV safe, original torrents seeding)")
+    print(f"    Authentication: {auth_type if not is_offline else 'Offline (no API required)'}")
 
     if compress_active or mode in ("compress", "full"):
         av1_badge = " [AV1 Hardware Encode]" if gpu.supports_av1 else ""
@@ -226,6 +254,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             detected_author=detected_author,
             category=cat,
             image_name=eff_image,
+            api_key=cli_api_key,
         )
 
         image_ready = check_image_exists(eff_image)
@@ -349,12 +378,48 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     else:
         print(f"  [-] Operator Image: '{IMAGE_NAME}' not built yet (run 'bin/operate build')")
 
+    # 6. Antigravity AI Agent Authentication Check
+    has_auth, auth_type = check_auth_available()
+    if has_auth:
+        print(f"  [✓] Gemini Authentication: {auth_type}")
+    else:
+        print("  [-] Gemini Authentication: not configured yet")
+        print("      Run 'bin/operate login' or export GEMINI_API_KEY='your-key'")
+
     if all_ok:
         print("\nAll core host checks passed! You are ready to run `operate`.")
         return 0
     else:
         print("\nSome host requirements are missing. Review the errors above.")
         return 1
+
+
+def cmd_login(args: argparse.Namespace) -> int:
+    """Interactively authenticate with Google Antigravity inside the operator container."""
+    eff_image = get_effective_image_name()
+    host_gemini = Path.home() / ".gemini"
+    host_gemini.mkdir(parents=True, exist_ok=True)
+
+    docker_bin = shutil.which("docker") or "docker"
+    if not check_image_exists(eff_image):
+        print(f"==> Image '{eff_image}' not found locally. Attempting to pull...")
+        res = subprocess.run([docker_bin, "pull", eff_image])
+        if res.returncode != 0:
+            print("[-] Pull failed. Please build the image with 'bin/operate build'.", file=sys.stderr)
+            return 1
+
+    print("==> Launching interactive Antigravity authentication...")
+    print("    Follow the on-screen instructions to sign in with your Google account.")
+    print(f"    Credentials will be saved to: {host_gemini / 'antigravity-cli'}\n")
+
+    cmd = [
+        docker_bin, "run", "-it", "--rm",
+        "--name", "agy-operator-login",
+        "-v", f"{host_gemini.resolve()}:/home/agent/.gemini",
+        eff_image,
+        "agy",
+    ]
+    return subprocess.run(cmd).returncode
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -463,7 +528,17 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Run without interactive confirmation prompts (unattended mode).",
     )
+    p_run.add_argument(
+        "--api-key",
+        dest="api_key",
+        default=None,
+        help="Gemini API key for non-interactive headless authentication (or set GEMINI_API_KEY env var).",
+    )
     p_run.set_defaults(func=cmd_run)
+
+    # Subcommand: login
+    p_login = subparsers.add_parser("login", help="Authenticate with Google Antigravity via interactive browser login.")
+    p_login.set_defaults(func=cmd_login)
 
     # Subcommand: build
     p_build = subparsers.add_parser("build", help="Build the operator Docker container image.")

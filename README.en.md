@@ -109,9 +109,22 @@ While Docker Sandboxes (`sbx`) was initially considered, adopting standard **Doc
 ```bash
 bin/operate doctor
 ```
-Audits Docker Engine, detects host GPUs (AMD Radeon VA-API, NVIDIA NVENC), checks **AV1** hardware support, and verifies recipe catalogs.
+Audits Docker Engine, detects host GPUs (AMD Radeon VA-API, NVIDIA NVENC), checks **AV1** hardware support, Gemini authentication status, and recipe catalogs.
 
-### 2. Running Recipes
+### 2. Antigravity AI Agent Authentication
+Two authentication methods are supported:
+* **Interactive Browser Login (OAuth):**
+  ```bash
+  bin/operate login
+  ```
+  Launches interactive container authentication and persists credentials to `~/.gemini/antigravity-cli/antigravity-oauth-token` on the host.
+* **Or via Gemini API Key:**
+  ```bash
+  export GEMINI_API_KEY="AIzaSy..."
+  # or pass flag: bin/operate run ... --api-key="AIzaSy..."
+  ```
+
+### 3. Running Recipes
 
 * **Library Organization (Zero-Copy Hardlinks):**
   Instantly links downloads to your media library with IMDb canonical title resolution:
@@ -137,7 +150,7 @@ Audits Docker Engine, detects host GPUs (AMD Radeon VA-API, NVIDIA NVENC), check
   bin/operate run media-link /home/retro/HDD-EXT4/Downloads/Series /home/retro/HDD-EXT4/Media/TV --offline
   ```
 
-### 3. Container Image Build
+### 4. Container Image Build
 Derives downstream from `ghcr.io/retr0xcc/antigravity-sbx-patched:latest`:
 * **Remote (Automated):** Handled via GitHub Actions [.github/workflows/build-and-publish.yml](.github/workflows/build-and-publish.yml).
 * **Local (Optional):** When modifying recipes or container dependencies locally:
@@ -180,7 +193,8 @@ operate run <recipe> <source> [destination] [options]
 | `--max-bitrate` | — | Bitrate threshold in kbps (e.g. `4500`): re-encode files exceeding this value |
 | `--offline` | `false` | Run with `--network=none` and local regex title resolution |
 | `--no-proxy` | `false` | Bypass local allowlist proxy and allow unconstrained network access |
-| `--dry-run` | `false` | Dry-run simulation: print plan without modifying filesystem |
+| `--api-key` | `env` | Gemini API key (alternative to `bin/operate login`) |
+| `--dry-run` | `false` | Dry-run simulation: run agent in read-only mode (`/storage:ro`) to print execution plan |
 | `--auto` | `false` | Unattended automated execution without interactive prompts |
 
 ---

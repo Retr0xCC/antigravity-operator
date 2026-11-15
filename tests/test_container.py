@@ -89,6 +89,25 @@ class TestContainer(unittest.TestCase):
         self.assertIn(f"{self.storage_root.resolve()}:/storage:rw", cmd_str)
         self.assertNotIn(f"{self.storage_root.resolve()}:/storage:ro", cmd_str)
 
+    def test_api_key_injection(self):
+        cmd = build_docker_cmd(
+            recipe=self.recipe,
+            storage_root=self.storage_root,
+            api_key="test-gemini-key-12345",
+        )
+        cmd_str = " ".join(cmd)
+        self.assertIn("GEMINI_API_KEY=test-gemini-key-12345", cmd_str)
+        self.assertIn("GOOGLE_API_KEY=test-gemini-key-12345", cmd_str)
+
+    def test_host_gemini_mounted(self):
+        cmd = build_docker_cmd(
+            recipe=self.recipe,
+            storage_root=self.storage_root,
+        )
+        cmd_str = " ".join(cmd)
+        host_gemini = Path.home() / ".gemini"
+        self.assertIn(f"{host_gemini.resolve()}:/home/agent/.gemini", cmd_str)
+
 
 if __name__ == "__main__":
     unittest.main()

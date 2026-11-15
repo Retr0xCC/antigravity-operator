@@ -109,9 +109,22 @@
 ```bash
 bin/operate doctor
 ```
-Проверяет наличие Docker Engine, распознает видеокарту хоста (AMD Radeon VA-API, NVIDIA NVENC), поддержку аппаратного **AV1** и рецепты.
+Проверяет наличие Docker Engine, распознает видеокарту хоста (AMD Radeon VA-API, NVIDIA NVENC), поддержку аппаратного **AV1**, статус авторизации в Gemini и рецепты.
 
-### 2. Запуск рецептов
+### 2. Авторизация в Google Antigravity
+Оператор поддерживает два способа аутентификации:
+* **Интерактивный вход через браузер (OAuth):**
+  ```bash
+  bin/operate login
+  ```
+  Авторизует сессию в контейнере и сохраняет токен в `~/.gemini/antigravity-cli/antigravity-oauth-token` на хосте.
+* **Или через Gemini API Key:**
+  ```bash
+  export GEMINI_API_KEY="AIzaSy..."
+  # или передайте флаг: bin/operate run ... --api-key="AIzaSy..."
+  ```
+
+### 3. Запуск рецептов
 
 * **Организация медиатеки (Zero-Copy Hardlink):**
   Мгновенно связывает фильм или сериал из `Downloads` в `Media` с поиском канонического названия на IMDb:
@@ -137,7 +150,7 @@ bin/operate doctor
   bin/operate run media-link /home/retro/HDD-EXT4/Downloads/Series /home/retro/HDD-EXT4/Media/TV --offline
   ```
 
-### 3. Сборка контейнера
+### 4. Сборка контейнера
 Образ собирается downstream от базового `ghcr.io/retr0xcc/antigravity-sbx-patched:latest`:
 * **Удаленно:** через встроенный GitHub Actions воркфлоу [.github/workflows/build-and-publish.yml](.github/workflows/build-and-publish.yml) (образ автоматически публикуется в GHCR).
 * **Локально:** при необходимости внесения правок:
@@ -180,7 +193,8 @@ operate run <recipe> <source> [destination] [параметры]
 | `--max-bitrate` | — | Порог битрейта в kbps (например `4500`): пережимать только релизы выше порога |
 | `--offline` | `false` | Полный офлайн без сетевых интерфейсов (`--network=none`, офлайн-парсинг) |
 | `--no-proxy` | `false` | Отключить встроенный allowlist-прокси и дать прямой сетевой доступ |
-| `--dry-run` | `false` | Симуляция: вывод плана и команд без изменения файлов |
+| `--api-key` | `env` | Ключ Gemini API (альтернатива входу через `bin/operate login`) |
+| `--dry-run` | `false` | Симуляция: запуск агента в read-only режиме (`/storage:ro`) для вывода плана |
 | `--auto` | `false` | Автономный запуск без интерактивных подтверждений |
 
 ---

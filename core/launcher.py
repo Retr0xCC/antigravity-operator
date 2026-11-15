@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from pathlib import Path
 from core.gpu import detect_gpu
 
 
+DEFAULT_BASE_AGENT = "shell"
 DEFAULT_BASE_KIT = "ghcr.io/retr0xcc/antigravity-kit:latest"
 DEFAULT_MIXIN_KIT = "ghcr.io/retr0xcc/media-operator-kit:latest"
 DEFAULT_OPERATOR_IMAGE = "ghcr.io/retr0xcc/antigravity-operator:latest"
@@ -155,7 +157,7 @@ def run_sandbox_planner(
     write_host_profile(workspace, profile)
 
     # 2. Resolve Kits and copy AGENTS.md instructions
-    eff_base_kit = base_kit_ref or resolve_base_kit_path()
+    eff_base_agent = base_kit_ref or DEFAULT_BASE_AGENT
     eff_mixin_kit = mixin_kit_ref or resolve_kit_path()
     eff_image = get_effective_image(custom_image)
 
@@ -189,7 +191,7 @@ def run_sandbox_planner(
     print(f"  Operating Mode:     {mode.upper()}")
     print(f"  Host GPU:           {profile['gpu']['name']} ({profile['gpu']['backend'].upper()})")
     print(f"  Sandbox Runner:     {'Docker Sandboxes (sbx)' if sbx_bin else 'Docker Engine (fallback)'}")
-    print(f"  Base Kit:           {eff_base_kit}")
+    print(f"  Base Agent:         {eff_base_agent}")
     print(f"  Mixin Kit:          {eff_mixin_kit}")
     print(f"  Execution Mode:     {'Headless (Auto-exit)' if headless else 'Interactive TUI'}")
     print("=" * 72 + "\n")
@@ -217,14 +219,18 @@ def run_sandbox_planner(
 
         # Positional arguments: [SANDBOX_KIT] [PRIMARY_WORKSPACE] [EXTRA_WORKSPACES...]
         cmd.extend([
-            eff_base_kit,
+            eff_base_agent,
             str(workspace),
             f"{out}:/media/output",
             f"{src}:/media/input:ro",
             "--",
-            "--dangerously-skip-permissions",
-            prompt_flag,
         ])
+
+        if eff_base_agent == "shell":
+            agy_cmd = f"exec agy --dangerously-skip-permissions {shlex.quote(prompt_flag)}"
+            cmd.extend(["-l", "-c", agy_cmd])
+        else:
+            cmd.extend(["--dangerously-skip-permissions", prompt_flag])
     else:
         # Fallback to direct Docker if sbx is not installed
         is_tty = sys.stdin.isatty() and sys.stdout.isatty()

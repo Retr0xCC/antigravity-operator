@@ -246,11 +246,12 @@ def cmd_run(args: argparse.Namespace) -> int:
             print("\n[DRY RUN] Generated Docker execution command:")
             escaped_cmd = [shlex.quote(c) for c in cmd]
             print(" \\\n    ".join(escaped_cmd))
-            print("\n[DRY RUN] In live execution, the agent will execute inside the sandbox with OPERATE_DRY_RUN=1.")
+            print("\n[DRY RUN] Dry-run complete: no container was started and no files were modified.")
+            print("[DRY RUN] To perform live execution, run the command without the '--dry-run' flag.")
 
             if not image_ready:
-                print(f"\n[DRY RUN] Note: Image '{eff_image}' is not yet built locally or pulled.")
-                print("[DRY RUN] Run 'bin/operate build' to compile the container image.")
+                print(f"\n[DRY RUN] Note: Image '{eff_image}' is not yet pulled locally.")
+                print("[DRY RUN] Run 'docker pull " + eff_image + "' or launch without --dry-run to auto-pull.")
             return 0
 
         if not image_ready:

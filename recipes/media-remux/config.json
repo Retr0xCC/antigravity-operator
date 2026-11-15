@@ -1,0 +1,13 @@
+{
+  "name": "media-remux",
+  "version": "1.0.0",
+  "description": "Lossless stream remuxing: merge external audio, subtitles, and fonts into monolithic MKV files via Muxpress",
+  "gpu": false,
+  "network": false,
+  "timeout": "2h",
+  "resources": {
+    "memory": "8g",
+    "cpus": "4",
+    "pids": "2048"
+  }
+}

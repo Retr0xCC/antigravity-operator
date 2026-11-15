@@ -1,0 +1,13 @@
+{
+  "name": "media-link",
+  "version": "1.0.0",
+  "description": "Fast Plex/Jellyfin library organization via Zero-Copy hardlinks (IMDb/TMDB/regex naming, no re-encoding)",
+  "gpu": false,
+  "network": true,
+  "timeout": "30m",
+  "resources": {
+    "memory": "4g",
+    "cpus": "2",
+    "pids": "1024"
+  }
+}

@@ -1,0 +1,28 @@
+# ========================================================
+# Docker Sandbox Declarative Environment (sbxenv-media.yaml)
+# Run with: sbx env run
+# Plan with: sbx env plan
+# ========================================================
+schemaVersion: "1"
+name: media-workspace
+agent: shell
+workspace: .
+
+sandboxOptions:
+  # Downstream image built with Antigravity CLI, QNIX patch, and multimedia toolchain
+  template: ghcr.io/retr0xcc/antigravity-operator:latest
+  memory: 8gb
+  cpus: 4
+
+# Attached Kits
+kits:
+  - path: ./kits/media-operator
+
+# Environment Variables
+env:
+  PYTHONUNBUFFERED: "1"
+  AGY_CLI_DISABLE_AUTO_UPDATE: "true"
+  GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+  OPERATE_MODE: "${OPERATE_MODE:-link}"
+  OPERATE_GPU_BACKEND: "${OPERATE_GPU_BACKEND:-vaapi}"
+  OPERATE_VIDEO_CODEC: "${OPERATE_VIDEO_CODEC:-av1}"

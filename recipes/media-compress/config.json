@@ -1,0 +1,13 @@
+{
+  "name": "media-compress",
+  "version": "1.0.0",
+  "description": "Hardware AV1 / HEVC 10-bit compression (AMD VA-API / NVIDIA NVENC) with bitrate thresholds and atomic rollback on size increase",
+  "gpu": true,
+  "network": false,
+  "timeout": "6h",
+  "resources": {
+    "memory": "8g",
+    "cpus": "4",
+    "pids": "4096"
+  }
+}

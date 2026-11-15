@@ -1,0 +1,13 @@
+{
+  "name": "media-pipeline",
+  "version": "1.0.0",
+  "description": "Automated torrent media organization (Plex/Jellyfin) via hardlinks with optional AV1 / HEVC hardware compression",
+  "gpu": false,
+  "network": false,
+  "timeout": "4h",
+  "resources": {
+    "memory": "8g",
+    "cpus": "4",
+    "pids": "4096"
+  }
+}

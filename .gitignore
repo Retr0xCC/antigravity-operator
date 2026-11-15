@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.temp.*
+*.log
+.worktrees/
+
+# Dev Container Antigravity Sandbox (Isolated)
+.devcontainer/

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
 import shutil
@@ -48,142 +49,134 @@ def get_effective_image_name() -> str:
     return REMOTE_IMAGE_NAME
 
 
+def get_host_gemini_dir() -> Path:
+    """Return the shared host directory for Gemini config (~/.gemini or $GEMINI_HOME)."""
+    p = Path(os.environ.get("GEMINI_HOME", Path.home() / ".gemini")).resolve()
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def get_host_cache_dir() -> Path:
+    """Return the shared host directory for cache (~/.cache/antigravity or $XDG_CACHE_HOME)."""
+    p = (Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "antigravity").resolve()
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
 def ensure_volume_permissions() -> None:
-    """Ensure persistent Docker volumes have write permissions for container user (UID 1000)."""
-    docker_bin = shutil.which("docker") or "docker"
-    for img in ("alpine:latest", IMAGE_NAME, REMOTE_IMAGE_NAME):
-        if check_image_exists(img):
-            try:
-                subprocess.run(
-                    [
-                        docker_bin, "run", "--rm",
-                        "--user", "0:0",
-                        "-v", "agy-operator-config:/home/agent/.gemini",
-                        "-v", "agy-operator-cache:/home/agent/.cache",
-                        img,
-                        "sh", "-c", "chown -R 1000:1000 /home/agent/.gemini /home/agent/.cache && chmod -R 775 /home/agent/.gemini /home/agent/.cache",
-                    ],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                break
-            except Exception:
-                pass
+    """Ensure host .gemini directory permissions allow container user access."""
+    try:
+        get_host_gemini_dir().chmod(0o775)
+    except OSError:
+        pass
 
 
-def save_volume_credentials(api_key: str) -> bool:
-    """Persist the Gemini API key inside the Docker volume 'agy-operator-config'."""
-    docker_bin = shutil.which("docker") or "docker"
-    for img in ("alpine:latest", IMAGE_NAME, REMOTE_IMAGE_NAME):
-        if check_image_exists(img):
-            try:
-                script = (
-                    "mkdir -p /home/agent/.gemini/antigravity-cli && "
-                    f"printf 'GEMINI_API_KEY=%s\\n' {shlex.quote(api_key)} > /home/agent/.gemini/antigravity-cli/credentials.env && "
-                    "printf '{\"modelProvider\": \"gemini\"}\\n' > /home/agent/.gemini/antigravity-cli/settings.json && "
-                    "chown -R 1000:1000 /home/agent/.gemini && "
-                    "chmod 600 /home/agent/.gemini/antigravity-cli/credentials.env"
-                )
-                cmd = [
-                    docker_bin, "run", "--rm",
-                    "--user", "0:0",
-                    "-v", "agy-operator-config:/home/agent/.gemini",
-                    img,
-                    "sh", "-c", script,
-                ]
-                res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                return res.returncode == 0
-            except Exception:
-                pass
-    return False
+def save_shared_credentials(api_key: str) -> bool:
+    """Persist the Gemini API key inside the shared ~/.gemini directory."""
+    try:
+        cli_dir = get_host_gemini_dir() / "antigravity-cli"
+        cli_dir.mkdir(parents=True, exist_ok=True)
+        cred_file = cli_dir / "credentials.env"
+        cred_file.write_text(f"GEMINI_API_KEY={api_key}\n")
+        cred_file.chmod(0o600)
+
+        settings_file = cli_dir / "settings.json"
+        try:
+            data = json.loads(settings_file.read_text()) if settings_file.is_file() else {}
+        except Exception:
+            data = {}
+        data["modelProvider"] = "gemini"
+        settings_file.write_text(json.dumps(data, indent=2))
+        return True
+    except Exception:
+        return False
 
 
-def load_volume_credentials() -> str | None:
-    """Read the persisted Gemini API key from Docker volume 'agy-operator-config'."""
-    docker_bin = shutil.which("docker") or "docker"
-    for img in ("alpine:latest", IMAGE_NAME, REMOTE_IMAGE_NAME):
-        if check_image_exists(img):
-            try:
-                cmd = [
-                    docker_bin, "run", "--rm",
-                    "-v", "agy-operator-config:/home/agent/.gemini",
-                    img,
-                    "sh", "-c",
-                    "cat /home/agent/.gemini/antigravity-cli/credentials.env 2>/dev/null || true",
-                ]
-                res = subprocess.run(cmd, capture_output=True, text=True)
-                if res.returncode == 0:
-                    for line in res.stdout.splitlines():
-                        if line.startswith("GEMINI_API_KEY="):
-                            val = line.split("=", 1)[1].strip()
-                            if val:
-                                return val
-            except Exception:
-                pass
+def load_shared_credentials() -> str | None:
+    """Read the persisted Gemini API key from the shared ~/.gemini directory."""
+    cred_file = get_host_gemini_dir() / "antigravity-cli" / "credentials.env"
+    if cred_file.is_file():
+        try:
+            for line in cred_file.read_text().splitlines():
+                if line.startswith("GEMINI_API_KEY="):
+                    val = line.split("=", 1)[1].strip()
+                    if val:
+                        return val
+        except Exception:
+            pass
     return None
 
 
-def clear_volume_credentials() -> bool:
-    """Clear saved credentials and settings from Docker volume 'agy-operator-config'."""
-    docker_bin = shutil.which("docker") or "docker"
-    for img in ("alpine:latest", IMAGE_NAME, REMOTE_IMAGE_NAME):
-        if check_image_exists(img):
+def clear_shared_credentials() -> bool:
+    """Clear saved credentials and settings from the shared ~/.gemini directory."""
+    try:
+        cli_dir = get_host_gemini_dir() / "antigravity-cli"
+        for f in [
+            cli_dir / "credentials.env",
+            cli_dir / "antigravity-oauth-token",
+            get_host_gemini_dir() / "oauth_credentials.json",
+        ]:
+            if f.is_file():
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+        settings_file = cli_dir / "settings.json"
+        if settings_file.is_file():
             try:
-                script = (
-                    "rm -f /home/agent/.gemini/antigravity-cli/credentials.env "
-                    "/home/agent/.gemini/antigravity-cli/antigravity-oauth-token "
-                    "/home/agent/.gemini/oauth_credentials.json 2>/dev/null || true; "
-                    "printf '{}' > /home/agent/.gemini/antigravity-cli/settings.json 2>/dev/null || true"
-                )
-                cmd = [
-                    docker_bin, "run", "--rm",
-                    "--user", "0:0",
-                    "-v", "agy-operator-config:/home/agent/.gemini",
-                    img,
-                    "sh", "-c", script,
-                ]
-                res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                return res.returncode == 0
+                data = json.loads(settings_file.read_text())
+                data.pop("modelProvider", None)
+                settings_file.write_text(json.dumps(data, indent=2))
             except Exception:
                 pass
-    return False
+        return True
+    except Exception:
+        return False
 
 
+def check_shared_token() -> tuple[bool, str | None]:
+    """Check if the shared ~/.gemini directory contains an active OAuth token."""
+    cli_dir = get_host_gemini_dir() / "antigravity-cli"
+    token_file = cli_dir / "antigravity-oauth-token"
+    if token_file.is_file() and token_file.stat().st_size > 0:
+        try:
+            data = json.loads(token_file.read_text())
+            email = data.get("id_token_email")
+            return True, email
+        except Exception:
+            return True, None
+
+    legacy = get_host_gemini_dir() / "oauth_credentials.json"
+    if legacy.is_file() and legacy.stat().st_size > 0:
+        return True, None
+    return False, None
+
+
+# Aliases for backward compatibility in tests
+save_volume_credentials = save_shared_credentials
+load_volume_credentials = load_shared_credentials
+clear_volume_credentials = clear_shared_credentials
 def check_volume_token_exists() -> bool:
-    """Check if the persistent Docker volume 'agy-operator-config' contains an OAuth token."""
-    docker_bin = shutil.which("docker") or "docker"
-    for img in ("alpine:latest", IMAGE_NAME, REMOTE_IMAGE_NAME):
-        if check_image_exists(img):
-            try:
-                cmd = [
-                    docker_bin, "run", "--rm",
-                    "-v", "agy-operator-config:/home/agent/.gemini",
-                    img,
-                    "sh", "-c",
-                    "test -s /home/agent/.gemini/antigravity-cli/antigravity-oauth-token || "
-                    "test -s /home/agent/.gemini/oauth_credentials.json",
-                ]
-                res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                return res.returncode == 0
-            except Exception:
-                pass
-    return False
+    has_token, _ = check_shared_token()
+    return has_token
 
 
 def check_auth_available(api_key: str | None = None) -> tuple[bool, str, str | None]:
-    """Check whether Gemini authentication (container volume or API key) is available.
+    """Check whether Gemini authentication (shared ~/.gemini or API key) is available.
     Returns: (is_available, description, effective_api_key)
     """
     eff_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if eff_key:
         return True, "API Key (Provided via CLI / environment)", eff_key
 
-    persisted_key = load_volume_credentials()
-    if persisted_key:
-        return True, "API Key (Persisted in container volume 'agy-operator-config')", persisted_key
+    saved_key = load_shared_credentials()
+    if saved_key:
+        return True, "API Key (Saved in shared ~/.gemini)", saved_key
 
-    if check_volume_token_exists():
-        return True, "OAuth Token (Container volume 'agy-operator-config')", None
+    has_token, email = check_shared_token()
+    if has_token:
+        desc = f"OAuth Token ({email}) in shared ~/.gemini" if email else "OAuth Token in shared ~/.gemini"
+        return True, desc, None
 
     return False, "None", None
 
@@ -288,9 +281,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     has_auth, auth_type, resolved_api_key = check_auth_available(cli_api_key)
     if not has_auth and not is_offline:
         print("\n[-] Error: Google Antigravity authentication required.", file=sys.stderr)
-        print("    No active session found in container volume 'agy-operator-config' and no GEMINI_API_KEY provided.\n", file=sys.stderr)
+        print("    No active session found in shared ~/.gemini and no GEMINI_API_KEY provided.\n", file=sys.stderr)
         print("    To authenticate, choose one of the following:", file=sys.stderr)
-        print("    1. Sign in or save your Gemini API key inside the container volume:", file=sys.stderr)
+        print("    1. Sign in or save your Gemini API key in ~/.gemini:", file=sys.stderr)
         print("       bin/operate login\n", file=sys.stderr)
         print("    2. Or provide a Gemini API key via CLI or environment:", file=sys.stderr)
         print("       export GEMINI_API_KEY=\"your-gemini-api-key\"", file=sys.stderr)
@@ -526,28 +519,40 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 def _run_interactive_oauth(docker_bin: str, eff_image: str) -> int:
     """Launch interactive Google OAuth session inside the container."""
+    host_gemini = get_host_gemini_dir()
+    host_cache = get_host_cache_dir()
     ensure_volume_permissions()
-    # Reset settings.json so it does not block OAuth with modelProvider=gemini
-    clear_volume_credentials()
+
+    # If settings.json forces modelProvider: gemini, reset it so agy falls back to Google OAuth
+    settings_file = host_gemini / "antigravity-cli" / "settings.json"
+    if settings_file.is_file():
+        try:
+            data = json.loads(settings_file.read_text())
+            if data.pop("modelProvider", None) is not None:
+                settings_file.write_text(json.dumps(data, indent=2))
+        except Exception:
+            pass
 
     print("\n==> Launching interactive Antigravity login inside container...")
     print("    Follow the on-screen prompt to sign in with your Google account.")
-    print("    Credentials will be stored persistently in Docker volume 'agy-operator-config'.\n")
+    print(f"    Credentials will be stored persistently in shared directory '{host_gemini}'.\n")
 
     cmd = [
         docker_bin, "run", "-it", "--rm",
         "--name", "agy-operator-login",
         "--net=host",
-        "-v", "agy-operator-config:/home/agent/.gemini",
-        "-v", "agy-operator-cache:/home/agent/.cache",
+        "-v", f"{host_gemini}:/home/agent/.gemini",
+        "-v", f"{host_cache}:/home/agent/.cache",
         eff_image,
         "agy",
     ]
     ret = subprocess.run(cmd).returncode
     ensure_volume_permissions()
 
-    if check_volume_token_exists():
-        print("\n[✓] OAuth token detected and stored in Docker volume 'agy-operator-config'.")
+    has_token, email = check_shared_token()
+    if has_token:
+        acct = f" ({email})" if email else ""
+        print(f"\n[✓] OAuth token detected{acct} and stored in shared directory '{host_gemini}'.")
         print("    You can now run recipes with: bin/operate run <recipe> <source>")
         return 0
     elif ret == 0:
@@ -559,17 +564,18 @@ def _run_interactive_oauth(docker_bin: str, eff_image: str) -> int:
 
 
 def cmd_login(args: argparse.Namespace) -> int:
-    """Configure and persist Gemini authentication inside the container volume."""
+    """Configure and persist Gemini authentication in the shared host directory."""
     docker_bin = shutil.which("docker") or "docker"
+    host_gemini = get_host_gemini_dir()
 
     # Action 1: Logout
     if getattr(args, "logout", False):
-        print("==> Removing saved Antigravity credentials from Docker volume 'agy-operator-config'...")
-        if clear_volume_credentials():
+        print(f"==> Removing saved Antigravity credentials from shared directory '{host_gemini}'...")
+        if clear_shared_credentials():
             print("[✓] Credentials removed successfully.")
             return 0
         else:
-            print("[-] Failed to clear volume credentials.", file=sys.stderr)
+            print("[-] Failed to clear shared credentials.", file=sys.stderr)
             return 1
 
     # Action 2: Check status
@@ -597,13 +603,13 @@ def cmd_login(args: argparse.Namespace) -> int:
     cli_key = getattr(args, "api_key", None)
     if cli_key:
         cli_key = cli_key.strip()
-        print("==> Saving provided Gemini API Key to container volume 'agy-operator-config'...")
-        if save_volume_credentials(cli_key):
-            print("[✓] Gemini API Key successfully saved and persisted in container volume.")
+        print(f"==> Saving provided Gemini API Key to shared directory '{host_gemini}'...")
+        if save_shared_credentials(cli_key):
+            print("[✓] Gemini API Key successfully saved and persisted in shared directory.")
             print("    You can now run tasks with: bin/operate run <recipe> <source>")
             return 0
         else:
-            print("[-] Failed to save credentials to volume.", file=sys.stderr)
+            print("[-] Failed to save credentials to shared directory.", file=sys.stderr)
             return 1
 
     # Action 4: Explicit OAuth flag requested
@@ -614,8 +620,8 @@ def cmd_login(args: argparse.Namespace) -> int:
     print("=" * 72)
     print("  Antigravity Operator Authentication Setup")
     print("=" * 72)
-    print("  The operator runs headlessly inside Docker. Credentials persist safely")
-    print("  inside the dedicated volume 'agy-operator-config' (host remains clean).\n")
+    print("  The operator runs headlessly inside Docker with credentials persisted")
+    print(f"  in the shared directory '{host_gemini}'.\n")
     print("  Choose an authentication method:")
     print("  1. Gemini API Key (Recommended - persistent, rock-solid in headless/Docker)")
     print("     Get a free key at https://aistudio.google.com/apikey")
@@ -640,13 +646,13 @@ def cmd_login(args: argparse.Namespace) -> int:
     if not entered_key:
         return _run_interactive_oauth(docker_bin, eff_image)
 
-    print("==> Persisting Gemini API Key in Docker volume 'agy-operator-config'...")
-    if save_volume_credentials(entered_key):
+    print(f"==> Persisting Gemini API Key in shared directory '{host_gemini}'...")
+    if save_shared_credentials(entered_key):
         print("[✓] Gemini API Key saved successfully!")
         print("    You can now run recipes with: bin/operate run <recipe> <source>")
         return 0
     else:
-        print("[-] Failed to save credentials to Docker volume.", file=sys.stderr)
+        print("[-] Failed to save credentials to shared directory.", file=sys.stderr)
         return 1
 
 

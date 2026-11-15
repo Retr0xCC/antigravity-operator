@@ -370,11 +370,15 @@ def build_docker_cmd(
         "-v", f"{recipe.path.resolve()}:/recipe:ro",
     ])
 
-    # 3. Mount persistent Gemini auth and tool cache Docker volumes
-    # Keeps auth state fully inside container volumes without requiring Antigravity on host
+    # 3. Mount shared ~/.gemini config and cache directories from host
+    host_gemini = Path(os.environ.get("GEMINI_HOME", Path.home() / ".gemini")).resolve()
+    host_gemini.mkdir(parents=True, exist_ok=True)
+    host_cache = (Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "antigravity").resolve()
+    host_cache.mkdir(parents=True, exist_ok=True)
+
     cmd.extend([
-        "-v", "agy-operator-config:/home/agent/.gemini",
-        "-v", "agy-operator-cache:/home/agent/.cache",
+        "-v", f"{host_gemini}:/home/agent/.gemini",
+        "-v", f"{host_cache}:/home/agent/.cache",
     ])
 
     # Pass Gemini / Google API Key if provided or available in host environment

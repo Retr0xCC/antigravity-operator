@@ -131,14 +131,14 @@ class TestContainer(unittest.TestCase):
             self.assertNotIn("GOOGLE_API_KEY=", cmd_str)
             self.assertNotIn('--settings={"modelProvider":"gemini"}', cmd_str)
 
-    def test_container_gemini_volume_mounted(self):
+    def test_container_gemini_shared_dir_mounted(self):
         cmd = build_docker_cmd(
             recipe=self.recipe,
             storage_root=self.storage_root,
         )
         cmd_str = " ".join(cmd)
-        self.assertIn("agy-operator-config:/home/agent/.gemini", cmd_str)
-        self.assertIn("agy-operator-cache:/home/agent/.cache", cmd_str)
+        self.assertIn(":/home/agent/.gemini", cmd_str)
+        self.assertIn(":/home/agent/.cache", cmd_str)
 
 
 if __name__ == "__main__":

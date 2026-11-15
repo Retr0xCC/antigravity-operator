@@ -112,12 +112,12 @@ bin/operate doctor
 Проверяет наличие Docker Engine, распознает видеокарту хоста (AMD Radeon VA-API, NVIDIA NVENC), поддержку аппаратного **AV1**, статус авторизации в Gemini и рецепты.
 
 ### 2. Авторизация в Google Antigravity
-Оператор полностью автономен и **не требует наличия Antigravity на хосте**. Настройки и ключи сохраняются внутри изолированного Docker-тома `agy-operator-config`:
+Оператор полностью автономен и **не требует наличия Antigravity на хосте**. Настройки, OAuth-токены и API-ключи сохраняются в общей директории `~/.gemini` (монтируемой в `/home/agent/.gemini` контейнера):
 * **Настройка авторизации (API-ключ или Google OAuth):**
   ```bash
   bin/operate login
   ```
-  Позволяет ввести ключ Gemini API (бесплатно на https://aistudio.google.com/apikey) или пройти вход через Google OAuth в браузере. Ключ сохраняется в Docker-том `agy-operator-config` и автоматически подхватывается всеми последующими запусками.
+  Позволяет ввести ключ Gemini API (бесплатно на https://aistudio.google.com/apikey) или пройти вход через Google OAuth в браузере. Ключ/токен сохраняется в `~/.gemini` и автоматически подхватывается всеми последующими запусками.
 * **Быстрое сохранение API-ключа одной командой:**
   ```bash
   bin/operate login --key="AIzaSy..."

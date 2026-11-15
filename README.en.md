@@ -112,12 +112,12 @@ bin/operate doctor
 Audits Docker Engine, detects host GPUs (AMD Radeon VA-API, NVIDIA NVENC), checks **AV1** hardware support, Gemini authentication status, and recipe catalogs.
 
 ### 2. Antigravity AI Agent Authentication
-The operator is fully self-contained and **does not require Antigravity installed on the host**. Credentials persist inside the dedicated Docker volume `agy-operator-config`:
+The operator is fully self-contained and **does not require Antigravity installed on the host**. Credentials, OAuth tokens, and settings persist inside the shared host directory `~/.gemini` (mounted directly to `/home/agent/.gemini` in the container):
 * **Configure Authentication (API Key or Google OAuth):**
   ```bash
   bin/operate login
   ```
-  Allows you to enter your Gemini API Key (get a free key at https://aistudio.google.com/apikey) or authenticate with Google OAuth. The key is securely saved into Docker volume `agy-operator-config` and automatically utilized across all subsequent runs.
+  Allows you to enter your Gemini API Key (get a free key at https://aistudio.google.com/apikey) or authenticate with Google OAuth. Credentials are automatically stored in `~/.gemini` and utilized across all subsequent runs.
 * **Quickly Save API Key via CLI flag:**
   ```bash
   bin/operate login --key="AIzaSy..."
